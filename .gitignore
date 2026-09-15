@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+.push-safe/
+.claude/campaign-state/
+.claude/*-bypass.log
+copy-variation-PASS-*.json
+copy-variation-FAIL-*.json
