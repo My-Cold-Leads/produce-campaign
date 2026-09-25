@@ -41,6 +41,8 @@ Contact tooling splits into two jobs that people conflate, and getting them the 
 
 Fall back to [Icypeas](https://icypeas.com) or [Findymail](https://findymail.com) as extra waterfall providers when your first choice misses.
 
+**For discovery, run five sources at once over the whole list:** Prospeo, Apollo, AI search on Google (role-targeted queries that Claude reads and verifies), the company's own website, and local or niche databases (sector directories, trade fair and event exhibitor lists). Filter only by the country the person works in, never by job title, and let AI classify the titles afterwards. The full method is in phase 0.3 of `.claude/commands/produce-campaign.md`.
+
 Running a paid search-first tool in the discovery slot cost us roughly 4x what it should have, because most of the spend went on people already in our database. Free search, then dedupe, then pay.
 
 **Do not re-run discovery on the same company list inside 90 days.** It returns about 5% new finds at full price.

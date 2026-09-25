@@ -41,6 +41,8 @@ Las herramientas de contactos hacen dos trabajos que la gente confunde, y hacerl
 
 Usa [Icypeas](https://icypeas.com) o [Findymail](https://findymail.com) como proveedores adicionales de la cascada cuando tu primera opción falle.
 
+**Para el descubrimiento, combina cinco fuentes a la vez sobre toda la lista:** Prospeo, Apollo, búsqueda con IA en Google (consultas por cargo que Claude lee y verifica), la web de la propia empresa, y bases de datos locales o de nicho (directorios del sector, listados de ferias y eventos). Filtra solo por el país donde trabaja la persona, nunca por cargo, y deja que la IA clasifique los cargos después. El método completo está en la fase 0.3 de `.claude/commands/produce-campaign.md`.
+
 Poner una herramienta de búsqueda de pago en el hueco del descubrimiento nos costó unas 4 veces lo que debería, porque la mayor parte del gasto se fue en gente que ya estaba en nuestra propia base de datos. Búsqueda gratis, deduplicar, y después pagar.
 
 **No repitas el descubrimiento sobre la misma lista de empresas antes de 90 días.** Devuelve alrededor de un 5% de hallazgos nuevos a precio completo.

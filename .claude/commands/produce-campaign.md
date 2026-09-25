@@ -87,17 +87,36 @@ Aim for 3-5x more companies than you need for your first campaign. You'll lose s
 
 ### 0.3 - Find Contacts at Those Companies
 
-For each company, find the decision makers matching your KDM personas.
+For each company, find ALL the decision makers matching your KDM personas - not just one. A company you mine for one person is a company you will pay to mine again later.
 
-**Discovery and enrichment are different jobs. Run them in this order or you will overpay by roughly 4x.**
+**Five sources, run at the same time over the whole company list.** Never one after another, and never only on the companies the previous source missed. Each source finds people the others miss.
 
-| Phase | You have | You want | Tool | Why this order |
-|-------|----------|----------|------|----------------|
-| **1. Discovery** | A company | A list of people at it | **Apollo first.** Its people search is free. | Paid search tools charge per result page whether or not you already hold that person. |
-| **2. Dedupe** | Search results | Only the people you don't have | Your own database | This is the step that saves the money. Fuzzy match on first name + title + company domain. |
-| **3. Enrichment** | A named person with no email | Their verified email | **Prospeo first**, then Apollo bulk match, then Icypeas or Findymail | Prospeo has free re-enrichment and does not charge on a miss, so it amortises cheaper at the same headline credit cost. |
+| # | Source | What it finds | How |
+|---|--------|---------------|-----|
+| 1 | **Prospeo** | Named people with LinkedIn, current employer refreshed often | People search by company domain + person country. |
+| 2 | **Apollo** | The widest list of names at a company | People search is free. Names come back partly masked, so use it to size and find, then enrich the ones you keep. |
+| 3 | **AI search on Google** | Decision makers the databases don't have, especially at small and mid-size companies | Role-targeted Google queries (e.g. via [Serper](https://serper.dev)), then Claude reads the results and the pages it finds. See "AI search" below. |
+| 4 | **The company's own website** | Names on team, about and contact pages, plus the company's email format | Claude reads the site (homepage, about, team, contact). The email format lets you build and verify a candidate email for free later. |
+| 5 | **Local and niche databases** | Companies and people the big databases cover badly | Sector directories, trade association member lists, trade fair and event exhibitor lists, any niche listing that fits your ICP. Scrape them and match to your company list. |
 
-Other sources: LinkedIn Sales Navigator for specific people by title, and company team/about pages, which are free and often list leadership.
+**AI search - how to run it with Claude.** Per company and per persona:
+- **Q1 (anchor the company):** `site:linkedin.com/company "{company_name}" OR {company_domain}`
+- **Q2 (role-targeted people):** `site:linkedin.com/in ("{company_name}" OR {company_domain}) (director OR head OR responsable OR jefe OR manager) ({persona keywords})` - swap the role and keyword cluster for each persona (e.g. CEO / Director General for P1, plant or operations director for P2).
+- **Q3 (fallback, broader roles):** the same company anchor with a wider set of titles for that persona.
+- **Cost cap:** max 3 searches and 2 profile reads per company, stop at 1-2 verified people.
+- **Verify before you keep:** the page Claude read must show the person CURRENTLY works there in that role. Search snippets only find candidate pages; they are never proof. If Claude can't quote it from a page it actually read, it saves nothing and says so.
+
+**Filter by person country, NOT by job title.** Search by company domain + the country where the person works (this drops a multinational's staff abroad). Do NOT use the vendors' title, seniority or department filters: real titles are messy ("Jefe de Mantenimiento", "Director Planta", two roles in one line) and those filters silently throw away real decision makers. Pull broadly, then classify locally.
+
+**Classify every title with AI, including the long tail.** Run each person's title through one classifier prompt that maps it to your personas (P1, P2, ... or "not a decision maker"). Build and lock that prompt with [iterative prompting](./iterative-prompting.md), and test it on a few known titles before every run. Don't skip titles that "sound junior" - that tail is where many real decision makers sit.
+
+**Then the order that saves the money:**
+
+| Step | You have | You want | Why this order |
+|------|----------|----------|----------------|
+| **1. Discover** (the five sources above) | A company | Everyone who could be a decision maker | Most of this is free or cheap. |
+| **2. Dedupe** | Search results | Only the people you don't have yet | This is the step that saves the money. Match on the LinkedIn profile slug (the part after `/in/`, decoded), or name + company when there is no LinkedIn. |
+| **3. Enrich** | A named person with no email | Their verified email | **Prospeo first**, then Apollo match, then Icypeas or Findymail, then verify. Only now do you pay. |
 
 **The incident behind this:** running a paid search-first tool in the discovery slot cost us roughly 4x what it should have, because most of the spend went on people already in our database.
 
@@ -105,14 +124,14 @@ Other sources: LinkedIn Sales Navigator for specific people by title, and compan
 
 **A person found without an email is still a find.** Save the contact with a null email and send it to the waterfall in Phase 3. Discarding it means paying to discover them again next quarter.
 
-**Save ALL contacts to your database:**
+**Save ALL contacts to your database, with every field the source returned** (title, LinkedIn, country, source):
 ```sql
 INSERT INTO contacts (client_name, email, first_name, last_name, job_title, company_domain, kdm)
 VALUES ('{CLIENT}', 'maria@company.com', 'Maria', 'Garcia', 'Head of Operations', 'company.com', 'P1')
 ON CONFLICT DO NOTHING;
 ```
 
-**Assign KDM personas** (P1, P2, P3, etc.) based on job title and seniority. P1 = your primary decision maker, P2 = secondary, etc. Define what each persona means for YOUR ICP in the client config.
+**Assign KDM personas** (P1, P2, P3, etc.) from the classifier above. P1 = your primary decision maker, P2 = secondary, etc. Define what each persona means for YOUR ICP in the client config.
 
 ### 0.4 - Verify Emails
 
