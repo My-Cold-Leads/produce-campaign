@@ -178,6 +178,21 @@ CREATE TABLE IF NOT EXISTS campaign_push_log (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Campaign approvals: who approved which exact push set (Phase 7.7). The wrapper checks the
+-- signed approval FILE; keep a row here as the durable record of it.
+CREATE TABLE IF NOT EXISTS campaign_approvals (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  client_name TEXT NOT NULL DEFAULT 'default',
+  campaign_id TEXT NOT NULL,
+  template_sha256 TEXT,
+  lead_count INTEGER,
+  lead_hashes JSONB DEFAULT '[]'::jsonb,
+  approved_by TEXT NOT NULL,
+  approved_at TIMESTAMPTZ NOT NULL,
+  note TEXT,  -- the approver's own words
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Upgrade path for installs created from an earlier version of this file.
 -- CREATE TABLE IF NOT EXISTS does not add columns to a table that already exists.
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT 'default';
@@ -195,6 +210,11 @@ ALTER TABLE campaign_copy_versions ADD COLUMN IF NOT EXISTS pushed BOOLEAN DEFAU
 ALTER TABLE prompt_library ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE prompt_library ADD COLUMN IF NOT EXISTS input_sanitization_rules JSONB;
 ALTER TABLE campaign_push_log ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT 'default';
+-- Added November 2026.
+ALTER TABLE campaign_responses ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT 'default';  -- read by the push wrapper's prior-reply gate
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS greeting_status TEXT;        -- Phase 6.6b: 'resolved', 'confirmed' or 'fallback'
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS website_identity TEXT;      -- Phase 4.5 verdict: does the website belong to this company
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS website_identity_checked_at TIMESTAMPTZ;
 -- An older install has UNIQUE(domain) on companies and a foreign key from
 -- contacts.company_domain. Both still work for a single client. To hold the same
 -- domain for two clients, drop that constraint and that foreign key; the unique
@@ -204,7 +224,17 @@ ALTER TABLE campaign_push_log ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL
 CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_client_domain ON companies(client_name, domain);
 CREATE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain);
 CREATE INDEX IF NOT EXISTS idx_companies_discovery ON companies(client_name, last_ai_contact_search_date);
+-- One row per person per client. This is the key that
+--   INSERT ... ON CONFLICT (client_name, LOWER(email)) WHERE email IS NOT NULL DO NOTHING
+-- dedupes on. Contacts with a NULL email (found, not yet enriched) are not covered by it.
+-- If this statement fails on an older install, you already have duplicates. Find them with:
+--   SELECT client_name, LOWER(email), COUNT(*) FROM contacts WHERE email IS NOT NULL
+--   GROUP BY 1, 2 HAVING COUNT(*) > 1;
+-- merge or delete the extra rows (re-point campaign_variables and outreach_log first), then re-run.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_client_email_unique ON contacts(client_name, LOWER(email)) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_contacts_client ON contacts(client_name);
+CREATE INDEX IF NOT EXISTS idx_campaign_responses_client_email ON campaign_responses(client_name, LOWER(lead_email));
+CREATE INDEX IF NOT EXISTS idx_campaign_approvals_campaign ON campaign_approvals(client_name, campaign_id);
 CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
 CREATE INDEX IF NOT EXISTS idx_contacts_email_domain ON contacts(client_name, (SPLIT_PART(email, '@', 2)));
 CREATE INDEX IF NOT EXISTS idx_contacts_company_domain ON contacts(company_domain);

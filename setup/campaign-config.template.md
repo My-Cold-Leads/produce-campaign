@@ -169,3 +169,36 @@ Filled in after live data comes back. Illustrative example (made-up numbers):
 |--------|------------------|-------------------|-------|
 | expansion | 3 batches | 2.0% | best performer |
 | generic | 3 batches | 0.5% | invest in research instead |
+
+## 14. Sending settings and contact policy
+
+Agreed with the client once, then read by the skill on every run. A blank value means ask, never guess.
+
+| Setting | Value | Agreed by / date |
+|---|---|---|
+| campaign_type | prospect | |
+| exclude_personal_emails | false | |
+| extra personal mailbox domains (file) | | |
+| follow-up percentage, 2-email sequence | | |
+| follow-up percentage, 3-email sequence | | |
+| follow-up percentage, 4+ email sequence | | |
+| per-inbox gap between emails (minutes) | | |
+| allowed email statuses | valid, deliverable_catchall | |
+| approved link domains | | |
+
+`campaign_type` is `prospect` or `partner` (Phase 1.1a). `exclude_personal_emails` is the per-client rule in Phase 2.2b. The gap is set on each inbox; the campaign-level gap stays at the platform minimum (Phase 5.1).
+
+## 15. Offer scorecard (Phase 6.0)
+
+One per persona. No copy is written until this is filled in and approved.
+
+| Field | Answer |
+|---|---|
+| Persona | |
+| Dream outcome (the thing they get, as a noun) | |
+| Why they would believe it (proof you can show) | |
+| Time to value | |
+| Effort asked of them | |
+| First ask (reply / click / call) | |
+| If call: the reason | |
+| Approved by, date, their words | |
