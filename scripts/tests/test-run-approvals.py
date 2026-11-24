@@ -135,6 +135,20 @@ check("RED: the hardening gate can never be bypassed on a quote",
       run("bypass-check", "--run", "acme-q1", "--gate", "hardening", "--quote", "yes, bypass the hardening gate", "--quoted-at", AFTER)[0] == 2)
 check("RED: a refusal that names the gate is not a bypass",
       run("bypass-check", "--run", "acme-q1", "--gate", "prompt cache", "--quote", "no, do not bypass the prompt cache gate", "--quoted-at", AFTER)[0] == 2)
+import copy
+EXPIRED_BUNDLE = copy.deepcopy(rec)
+EXPIRED_BUNDLE["bundle"]["expires_at"] = (NOW - dt.timedelta(hours=1)).isoformat()
+check("RED: an expired bundle covers no spend even when the item itself has not expired",
+      ra.spend_problem(EXPIRED_BUNDLE, "enrichment", 1) is not None and ra.spend_problem(rec, "enrichment", 1) is None)
+check("RED: an expired bundle covers no quote bypass even when the item itself has not expired",
+      ra.bypass_problem(EXPIRED_BUNDLE, "prompt cache", "yes, bypass the prompt cache gate", AFTER) is not None
+      and ra.bypass_problem(rec, "prompt cache", "yes, bypass the prompt cache gate", AFTER) is None)
+for never in ("hardening", "do not contact list", "push wrapper", "send limits", "start campaign", "go-live", "unsubscribe list"):
+    listed = copy.deepcopy(rec)
+    expires = (NOW + dt.timedelta(hours=10)).isoformat()
+    listed["decisions"] += [{"kind": "false_positive_bypass", "key": key, "verdict": "approved", "expires_at": expires} for key in ("policy", never)]
+    check("RED: the gate %r is refused even when it was listed and the quote names it" % never,
+          ra.bypass_problem(listed, never, "yes, bypass the %s gate" % never, AFTER) is not None)
 
 print("touchpoint 2, offer and 10 examples:")
 open(J("offer.md"), "w").write("We audit one route for free.")

@@ -304,6 +304,24 @@ run("RED: a read-only command does not cover the push after it", PUSH, "block",
     payload(cmd="grep -c a leads.json && curl -X POST https://api.x.com/campaigns/123/leads -d @leads.json"))
 run("RED: an echo redirected into a script is still read", PUSH, "block",
     payload(cmd="echo 'curl -X POST https://api.x.com/campaigns/123/leads -d @l.json' > load.sh"))
+for label, cmd in (
+        ("an env prefix", "LC_ALL=C grep -rn '%s' scripts/" % ENDPOINT), ("the env wrapper", "env LC_ALL=C grep -rn '%s' scripts/" % ENDPOINT),
+        ("bash -c", "bash -c \"grep -rn '%s' scripts/\"" % ENDPOINT), ("eval", "eval \"grep -rn '%s' scripts/\"" % ENDPOINT),
+        ("xargs", "ls scripts | xargs grep -n '%s'" % ENDPOINT), ("nohup", "nohup grep -rn '%s' scripts/" % ENDPOINT)):
+    run("a read-only command behind %s is allowed" % label, PUSH, "allow", payload(cmd=cmd))
+    run("a read-only command behind %s is allowed (start)" % label, HARD, "allow", payload(cmd=cmd.replace(ENDPOINT, START_TEXT)))
+run("a heredoc written to a file with tee is allowed", PUSH, "allow",
+    payload(cmd="tee notes.md <<'EOF'\nNever do: curl -X POST https://api.x.com/campaigns/123/leads -d @l.json\nEOF"))
+run("RED: a heredoc piped into a shell is run, not written", PUSH, "block",
+    payload(cmd="cat <<'EOF' | bash\ncurl -X POST https://api.x.com/campaigns/123/leads -d @l.json\nEOF"))
+run("RED: a heredoc piped through xargs into a shell is run", PUSH, "block",
+    payload(cmd="cat <<'EOF' | xargs sh\ncurl -X POST https://api.x.com/campaigns/123/leads -d @l.json\nEOF"))
+run("RED: awk getline from a command is not read-only", PUSH, "block",
+    payload(cmd="awk 'BEGIN{\"curl -X POST https://api.x.com/campaigns/123/leads -d @l.json\" | getline x}'"))
+run("RED: awk printing into a pipe is not read-only", PUSH, "block",
+    payload(cmd="awk '{print $1 | \"curl -X POST https://api.x.com/campaigns/123/leads -d @-\"}' ids.txt"))
+run("RED: find -delete is not read-only", PUSH, "block",
+    payload(cmd="find . -name 'POST https://api.x.com/campaigns/123/leads' -delete"))
 
 print("go-live needs the sending-capacity proof as well:")
 clear_proofs()
