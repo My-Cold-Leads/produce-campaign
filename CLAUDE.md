@@ -26,7 +26,7 @@ When executing any multi-step process (campaign production, enrichment pipeline,
 | Contact discovery | 50%+ of companies yield a contact |
 | Email waterfall | 40-50% find rate |
 | Variable generation | 95%+ of contacts get valid variables |
-| Copy quality (QA pass) | 98%+ pass rate |
+| Copy quality (QA pass) | Zero failures on a 10-20 sample; at most 2% on the full-batch QA sample |
 | Name normalization | 100% Title Case, 0% raw domains |
 | Campaign loading | 100% of qualified leads loaded |
 
@@ -291,9 +291,14 @@ Do this before moving to the next step.
 
 ---
 
-## Quality Review = AI Subagent, NEVER Regex Scripts
+## Quality Review: scripts count, models judge
 
-When reviewing generated content for quality issues, ALWAYS use a Haiku subagent - NEVER a regex/pattern-matching script. A script only catches what you hardcode; Haiku reasons about context, tone, marketing language, factual accuracy, and catches orders of magnitude more issues.
+Two kinds of check, never swapped:
+
+- **A script detects and counts anything with an exact definition:** a banned word is present, a line's share of the cohort, length, punctuation, an empty field, a duplicate. Use the shipped checkers where they exist. A model asked to count will miscount.
+- **A model judges meaning:** tone, marketing language, plausibility, whether a sentence fits the email around it. Use a Haiku-class subagent on the full rendered email. A pattern script only catches what you hard-coded.
+
+A script never rewrites meaning (no automatic word swaps), and a model's review never replaces a deterministic gate.
 
 ---
 
