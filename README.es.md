@@ -51,7 +51,7 @@ Poner una herramienta de búsqueda de pago en el hueco del descubrimiento nos co
 
 ### Qué cubre esto
 
-Este es un pipeline de **email**. Todo lo que hay aquí (la estructura de la secuencia, la longitud del copy, el tope de destinatarios por empresa, los periodos de espera) asume email y un servidor de correo receptor.
+Este es un pipeline **solo de email**. LinkedIn y otros canales de contacto no están incluidos; LinkedIn aparece únicamente como fuente de datos para encontrar personas. El envío está escrito para **Smartlead**, el agente para **Claude Code**, y los ejemplos están en español. Todo lo que hay aquí (la estructura de la secuencia, la longitud del copy, el tope de destinatarios por empresa, los periodos de espera) asume email y un servidor de correo receptor.
 
 Si más adelante añades otro canal, lo que no se traslada es: el tope por empresa (es una restricción del servidor de correo, no una regla del outbound), las normas de longitud de mensaje, y las reglas de deduplicación, porque una persona puede estar legítimamente en una cohorte de email y en una social en momentos distintos. Decide el canal desde el principio en lugar de añadirlo después, porque casi todas las fases se ramifican según eso.
 
@@ -61,20 +61,30 @@ El pipeline incluye una fase de comprobación de spam antes de cada push. En lug
 
 ## Cómo instalar
 
-1. Clona este repo (o simplemente descarga los archivos)
-2. Copia el directorio `.claude/` completo en la raíz de tu proyecto: los comandos, los hooks y sus tests. Si ya tienes un directorio `.claude/`, combínalo en lugar de sustituirlo.
-3. Copia `scripts/`, `prompts/` y `setup/` en la raíz de tu proyecto
-4. Copia `CLAUDE.md` a la raíz de tu proyecto (o combínalo con tu CLAUDE.md existente)
-5. Activa los hooks: añade las entradas de `.claude/settings.example.json` a tu `.claude/settings.json` (ver "Las puertas se cumplen" más abajo) y ejecuta `bash .claude/hooks/tests/run-tests.sh`
-6. Ejecuta el SQL de `setup/schema.sql` en el editor SQL de tu Supabase para crear las tablas necesarias. Se puede volver a ejecutar sin riesgo y actualiza una instalación anterior.
-7. Copia `setup/campaign-config.template.md` una vez por cliente y rellénalo
-8. Abre Claude Code y escribe `/produce-campaign TuNombreDeEmpresa`
+**Necesitas:** Claude Code, Python 3.9 o superior, una cuenta de Smartlead con su API key, y una base de datos Postgres (Supabase sirve) o, para una primera prueba, ficheros JSON. `psycopg` solo hace falta si el wrapper de push lee Postgres directamente (`pip install psycopg`). No hay más dependencias.
 
-Eso es todo. Claude te guiará en cada fase.
+1. Clona este repo (o descarga los archivos).
+2. Copia el directorio `.claude/` completo en la raíz de tu proyecto. Contiene el comando (`.claude/commands/`), los ficheros de fase que lee (`.claude/produce-campaign/phases/`) y los hooks con sus tests (`.claude/hooks/`). Si ya tienes un directorio `.claude/`, combínalo en lugar de sustituirlo.
+3. Copia `scripts/`, `prompts/` y `setup/` en la raíz de tu proyecto.
+4. Copia `CLAUDE.md` a la raíz de tu proyecto (o combínalo con tu CLAUDE.md existente).
+5. Activa los hooks: añade las entradas de `.claude/settings.example.json` a tu `.claude/settings.json`, dentro de los arrays y sin sustituir el fichero. Los hooks no hacen nada hasta que completes este paso.
+6. Ejecuta el SQL de `setup/schema.sql` en tu base de datos. Se puede volver a ejecutar sin riesgo y actualiza una instalación anterior. Si falla el índice único de `contacts`, ya tienes contactos duplicados: el comentario encima de esa sentencia explica cómo encontrarlos.
+7. Define `SMARTLEAD_API_KEY` (y `DATABASE_URL` si usas Postgres) en el entorno de tu terminal. Nunca escribas claves en un fichero del repo.
+8. Comprueba la instalación. Los cuatro deben terminar con `failed 0` o `failed=0`:
+   ```bash
+   bash .claude/hooks/tests/run-tests.sh
+   python3 scripts/tests/test-push-safe.py
+   python3 scripts/tests/test-verify-hardening.py
+   bash scripts/tests/test-check-copy-variation.sh
+   ```
+9. Copia `setup/campaign-config.template.md` una vez por cliente y rellénalo, incluidas la sección 14 (ajustes de envío) y la sección 15 (ficha de la oferta).
+10. Abre Claude Code y escribe `/produce-campaign TuNombreDeEmpresa`.
+
+A partir de ahí Claude te guía fase a fase y se detiene a pedir tu aprobación en cada puerta.
 
 ## Cómo funciona
 
-El pipeline tiene 14 fases. Cada fase tiene una puerta de control - no puedes avanzar sin completarla.
+El pipeline tiene 14 fases. Cada fase termina con una comprobación, y Claude se detiene a pedir tu aprobación antes de continuar. Algunas de esas comprobaciones se cumplen por código; la mayoría son instrucciones que Claude sigue. Mira "Qué se cumple por código y qué no" más abajo.
 
 1. **Configuración de sesión** - Cargar la configuración del cliente, comprobar la salud del TAM, verificar la frescura de los datos
 2. **Selección de contactos** - Elegir contactos por persona, aplicar filtros de calidad, puntuar la lista, deduplicar
@@ -147,58 +157,109 @@ python3 scripts/check-copy-variation.py --rendered rendered.json --client ACME \
   --exclusions '{"greeting": "^(bonjour|salut)\\b[^.!?,]{0,30}$", "signoff": "^(cordialement|bien à vous)$", "unsubscribe": "désinscri"}'
 ```
 
-## Las puertas se cumplen, no solo se documentan
+## Qué se cumple por código y qué no
 
-El skill describe 14 fases con un control en cada una. El markdown es un consejo -
-un agente puede leer una regla y saltársela igualmente, y no te enteras hasta que
-los correos ya han salido. Por eso las reglas que cuestan dinero de verdad también
-van cableadas como hooks PreToolUse, que rechazan la llamada directamente.
+Conviene tener claro qué estás instalando. Este repo es un procedimiento muy detallado, más una pequeña cantidad de código que hace cumplir las reglas allí donde un error no tiene vuelta atrás. La mayoría de las puertas del skill son instrucciones que Claude sigue; no son programas.
 
-Copia las entradas de `.claude/settings.example.json` dentro de tu propio
-`.claude/settings.json` para activarlas. Si ya tienes un settings.json, añade las
-entradas dentro de los arrays en lugar de sustituir el fichero.
+### Se cumple con código incluido aquí
 
-| Hook | Rechaza | Marcador para saltarlo |
-|---|---|---|
-| `pretooluse-push-safe-required.sh` | Desactivar la lista de bloqueo de la plataforma (esto nunca se puede saltar), y subidas de leads en crudo que se saltan el wrapper de deduplicación y espera (`scripts/push-safe.py`). Es una protección, no un entorno aislado: cualquier script llamado `push-safe.*` se considera de confianza | `PUSH_SAFE_OK:` |
-| `pretooluse-deliverability-hardening.sh` | Enviar, activar o ejecutar `push-safe.py --apply` sin una prueba de blindaje reciente. Cuando una lectura en vivo muestre el tracking de aperturas y clics apagado y el texto plano encendido, regístralo con `touch .claude/campaign-state/hardening-<campaign_id>.ok`. La prueba caduca a los `HARDENING_MAX_AGE_MIN` minutos (120 por defecto) | `HARDENING_OK:` |
-| `pretooluse-custom-field-syntax.sh` | Spintax, tokens de firma, o una variable metida dentro de spintax, en el valor de un campo personalizado | `CUSTOM_FIELD_OK:` |
-| `pretooluse-abstention-guard.sh` | Que el token `NOT_FOUND` llegue a un envío dirigido a un lead | `ABSTENTION_OK:` |
-| `pretooluse-prompt-cache-guard.sh` | Un bucle de llamadas a un modelo sin `cache_control` en el bloque de sistema. Es específico de Anthropic: OpenAI cachea automáticamente los prefijos largos, así que por defecto solo vigila el endpoint de Anthropic (`LLM_ENDPOINT_RE`) | `CACHE_OK:` |
-| `pretooluse-durable-writes.sh` | Un bucle que gasta dinero por registro y guarda solo al final | `DURABLE_WRITES_OK:` |
+| Regla | Quién la hace cumplir |
+|---|---|
+| La misma persona dos veces en un push | `scripts/push-safe.py` |
+| Dirección o dominio de empresa en la lista de no contactar (incluidos subdominios) | `scripts/push-safe.py` |
+| Estado del email fuera de la lista de verificados | `scripts/push-safe.py` |
+| La persona ya respondió con interés, "persona equivocada" o dejó la empresa (modo base de datos) | `scripts/push-safe.py` |
+| Periodo de espera de 90 días, contando los leads en cola sin enviar | `scripts/push-safe.py` |
+| Al lead le falta un campo que usa la plantilla | `scripts/push-safe.py --template` |
+| El conjunto de leads o la plantilla cambiaron después de la aprobación | `scripts/push-safe.py --approval` |
+| La campaña no corresponde al cliente, o el nombre del cliente no tiene historial | `scripts/push-safe.py` |
+| El lead ya está en cola en otra campaña activa, recibió un envío reciente o está dado de baja en la plataforma | `scripts/push-safe.py` (comprobación en vivo) |
+| Buzones personales, cuando la regla del cliente está activa | `scripts/push-safe.py --exclude-personal-emails` |
+| Listas de bloqueo de la plataforma desactivadas | `scripts/push-safe.py` + hook de push (sin excepción) |
+| Subida de leads en crudo que se salta el wrapper | hook de push |
+| Arrancar una campaña o cargar leads sin una prueba de blindaje reciente de esa campaña | `scripts/verify-hardening.py` + hook de blindaje |
+| Pausa entre emails definida a nivel de campaña, o porcentaje de seguimiento distinto del acordado | `scripts/verify-hardening.py` |
+| Una línea del cuerpo en más del 15% de los emails, una línea fija, menos del 90% de emails distintos | `scripts/check-copy-variation.py` |
+| El token `NOT_FOUND` en los datos de un lead; spintax o `%signature%` dentro de un campo personalizado | hooks |
+| Bucle de llamadas a un modelo sin caché; resultados de pago guardados solo al final | hooks (heurísticos) |
 
-Cada salto queda escrito en un log junto a los hooks. Usar uno en producción es un
-fallo de quien llama, no una solución.
+### Solo instrucciones (se le indica a Claude; nada impide saltarse el paso)
+
+El ritmo de consumo del TAM y el registro de cohorte, la puerta de la oferta (ecuación de valor), la comprobación de secuencias en curso, la verificación de citas de la fuente y de direcciones en la investigación, la comprobación de ICP, la identidad de la web (4.5), la comprobación de que el email pertenece a ese negocio (3.5), la confirmación del nombre del saludo, el bloqueo de la estructura de la secuencia, la escalera de iteración de prompts, el evaluador de copy, la comprobación de spam, el barrido completo del lote, la página de revisión de emails reales (el *fichero* de aprobación sí lo comprueba el código; construir y leer la revisión no), los justificantes de DNS y de enlaces antes del lanzamiento, la revisión posterior al push, el seguimiento y la retrospectiva.
+
+### Descrito pero no incluido (lo construyes tú, o Claude lo escribe en cada ejecución)
+
+La cascada de búsqueda y verificación de emails, el agente de investigación de empresas, el clasificador de ICP, el renderizador de emails (plantilla + campos + spintax + firma), el validador de campos, el evaluador de copy, el cliente del comprobador de spam, el generador de la página de revisión, el comparador del bloqueo de secuencia, el proceso de sincronización que rellena `first_sent_date` y `campaign_responses` desde tu plataforma, las herramientas de la biblioteca de prompts y el generador del manifiesto. En `prompts/` solo vienen tres prompts de partida.
+
+Dos de ellos afectan al código que sí viene: sin sincronización, `first_sent_date` queda vacío (el periodo de espera se calcula entonces con `loaded_date`, que es seguro pero conservador) y `campaign_responses` queda vacía (la puerta de respuestas previas y la comprobación de secuencias en curso dejan pasar a todos; la comprobación en vivo del wrapper sigue detectando los leads en cola en otra campaña).
+
+**Esfuerzo realista:** un equipo que ya trabaja con Claude Code, Smartlead y Postgres puede adoptarlo en una o dos semanas. Con otro framework de agentes u otra plataforma de envío hay que rehacer el wrapper y los hooks, usando el skill como especificación.
+
+### Qué ven los hooks y qué no
+
+Los hooks son comprobaciones PreToolUse que rechazan una llamada. Con los matchers de `.claude/settings.example.json` inspeccionan:
+
+- los comandos de **Bash**,
+- el contenido de **Write / Edit / MultiEdit**,
+- las **llamadas a herramientas MCP** (matcher `mcp__.*`: nombre de la herramienta y entrada completa). Puedes limitar el matcher al servidor de tu plataforma de envío.
+
+Una herramienta que ningún matcher les envía no se comprueba. Son guardas por patrones, no un sandbox: un push escondido en un script cuyo código el hook no llega a ver puede pasar, y por eso el wrapper repite por su cuenta las comprobaciones importantes.
+
+| Hook | Rechaza |
+|---|---|
+| `pretooluse-push-safe-required.sh` | Desactivar la lista de bloqueo de la plataforma (esto nunca se puede saltar), y las subidas de leads que se saltan `scripts/push-safe.py`, desde la terminal, un script o una herramienta MCP. Cualquier script llamado `push-safe.*` se considera de confianza |
+| `pretooluse-deliverability-hardening.sh` | Arrancar una campaña o cargar leads sin una prueba de **esa campaña exacta**, escrita por `scripts/verify-hardening.py` en los últimos 120 minutos. Se rechaza la prueba de otra campaña, un fichero vacío o una llamada cuyo id de campaña no se puede leer. Pausar nunca requiere prueba |
+| `pretooluse-custom-field-syntax.sh` | Spintax, tokens de firma, o una variable metida dentro de spintax, en el valor de un campo personalizado |
+| `pretooluse-abstention-guard.sh` | Que el token `NOT_FOUND` llegue a un envío dirigido a un lead |
+| `pretooluse-prompt-cache-guard.sh` | Un bucle de llamadas a un modelo sin `cache_control` en el bloque de sistema. Por defecto es específico de Anthropic (`LLM_ENDPOINT_RE`); OpenAI cachea los prefijos largos automáticamente |
+| `pretooluse-durable-writes.sh` | Un bucle que gasta dinero por registro y guarda solo al final |
+
+**Fallo cerrado.** Si un hook no puede interpretar la llamada que recibe, la bloquea.
+
+### Marcadores de excepción
+
+Todos los hooks, salvo la regla de la lista de bloqueo, aceptan un marcador puntual en el comando: `PUSH_SAFE_OK:`, `HARDENING_OK:`, `CUSTOM_FIELD_OK:`, `ABSTENTION_OK:`, `CACHE_OK:`, `DURABLE_WRITES_OK:`, seguido de un motivo de al menos 10 caracteres. El motivo, la herramienta y la hora se añaden a `.claude/<hook>-bypass.log`; un marcador sin motivo se bloquea.
+
+Un marcador es un rastro de auditoría, no un control: el propio agente vigilado puede escribirlo. Lee los logs y, si no quieres marcadores, define `CAMPAIGN_HOOKS_NO_BYPASS=1`. Del mismo modo, el fichero de aprobación demuestra que lo que se sube es lo que se revisó, no que lo firmó una persona. Mantén a una persona en la aprobación.
 
 ### Compruébalo antes de fiarte
 
 ```bash
-bash .claude/hooks/tests/run-tests.sh
+bash .claude/hooks/tests/run-tests.sh            # 65 casos de hooks
+python3 scripts/tests/test-push-safe.py          # 39 comprobaciones del wrapper contra una plataforma simulada, sin red
+python3 scripts/tests/test-verify-hardening.py   # 10 comprobaciones
+bash scripts/tests/test-check-copy-variation.sh  # 19 casos
 ```
 
-30 casos: a cada puerta se le da una entrada mala que debe rechazar y una buena que
-debe dejar pasar. Una puerta que nunca se ha puesto en rojo puede estar
-funcionando, o puede no estar haciendo nada - así lo distingues. Ese harness
-encontró dos fallos reales en estos hooks antes de publicarlos.
+A cada puerta se le da una entrada mala que debe rechazar y una buena que debe dejar pasar. Una puerta que nunca se ha puesto en rojo puede estar funcionando, o puede no estar haciendo nada. Este repo no tiene integración continua; ejecútalos tú después de cada cambio.
 
 Son bash y Python, sin dependencias. Léelos, son cortos.
 
 ### El wrapper de push
 
-`scripts/push-safe.py` es la única vía autorizada para cargar leads en Smartlead. Es una simulación salvo que pases `--apply`. Descarta emails no válidos, repeticiones de la misma persona y a cualquiera dentro del periodo de espera de 90 días, fuerza a false los ajustes de supresión, envía en lotes de hasta 1.000, concilia contra `total_leads`, escribe el registro de contacto en el momento del push e informa de `attempted / succeeded / failed / skipped` con motivos. Lee el periodo de espera de tu tabla `outreach_log` (`DATABASE_URL`, necesita `psycopg`) o de una exportación JSON (`--outreach-log`).
+`scripts/push-safe.py` es la única vía autorizada para cargar leads en Smartlead. Es una simulación salvo que pases `--apply`, y `--apply` exige un fichero de aprobación firmado. Ejecuta `python3 scripts/push-safe.py --help` para ver todas las puertas.
 
 ```bash
-python3 scripts/push-safe.py --campaign 1234567 --client ACME --leads leads.csv --outreach-log outreach_log.json
-python3 scripts/tests/test-push-safe.py   # demuestra la espera, la deduplicación y los ajustes forzados, sin red
+# simulación: quién se subiría, quién se omite y por qué; escribe la solicitud de aprobación
+python3 scripts/push-safe.py --campaign 12345 --client ACME --leads leads.csv \
+  --outreach-log outreach_log.json --suppression suppression.txt \
+  --template e1.html --write-approval-request approval.json
+# cuando quien revisa firme approval.json y verify-hardening.py haya pasado para la campaña 12345
+SMARTLEAD_API_KEY=... python3 scripts/push-safe.py --campaign 12345 --client ACME --campaign-name "ACME E1" \
+  --leads leads.csv --outreach-log outreach_log.json --suppression suppression.txt \
+  --template e1.html --approval approval.json --apply
 ```
 
 ### Variables de entorno
 
 | Variable | La usa | Por defecto | Qué hace |
 |---|---|---|---|
-| `SMARTLEAD_API_KEY` | `scripts/push-safe.py --apply`, `scripts/check-copy-variation.py --campaign` | ninguno | Tu API key de Smartlead |
+| `SMARTLEAD_API_KEY` | `scripts/push-safe.py --apply`, `scripts/verify-hardening.py`, `scripts/check-copy-variation.py --campaign` | ninguno | Tu API key de Smartlead |
 | `DATABASE_URL` | `scripts/push-safe.py` | ninguno | Cadena de conexión de Postgres para la tabla `outreach_log` (lectura del periodo de espera, escritura en el momento del push). Si no tienes acceso directo a la base de datos, usa `--outreach-log FICHERO.json` |
 | `PUSH_SAFE_WRAPPER` | hook push-safe | `push-safe` | Nombre base de tu wrapper de push, si lo renombraste o escribiste el tuyo |
+| `CAMPAIGN_HOOKS_NO_BYPASS` | todos los hooks | sin definir | Ponlo a `1` para desactivar todos los marcadores de excepción |
+| `CAMPAIGN_STATE_DIR` | hook de blindaje, `scripts/verify-hardening.py` | `.claude/campaign-state` | Dónde se escriben y se leen las pruebas de blindaje |
+| `CAMPAIGN_HOOK_LOG_DIR` | todos los hooks | `.claude` | Dónde se escriben los logs de auditoría de excepciones |
 | `HARDENING_MAX_AGE_MIN` | hook de blindaje de entregabilidad | `120` | Minutos que es válida una prueba de blindaje |
 | `ABSTENTION_TOKEN` | hook de abstención | `NOT_FOUND` | El token que devuelven tus prompts cuando la fuente no respalda una respuesta |
 | `LLM_ENDPOINT_RE` | hook de caché de prompt | `api\.anthropic\.com/v1/messages` | Regex de los endpoints de modelos que vigila el hook |
@@ -211,6 +272,8 @@ python3 scripts/tests/test-push-safe.py   # demuestra la espera, la deduplicaci�
 python3 scripts/check-copy-variation.py --rendered rendered.json --client ACME
 bash scripts/tests/test-check-copy-variation.sh   # demuestra que falla con copy repetido
 ```
+
+Los saludos (también "Hola, Ana." y "Dear Ana,"), las despedidas en español e inglés, la firma del buzón, una línea que solo contiene un token `%sender-...%` y hasta dos líneas cortas de nombre tras la despedida no cuentan como cuerpo del email. Usa `--copy-field NOMBRE` para un campo personalizado corto que lleva copy y no datos del lead, y `--exclusions` para dar tus propios patrones de saludo y despedida en otro idioma.
 
 ---
 
@@ -226,6 +289,15 @@ Nuestra metodología de copywriting ha sido moldeada por varios profesionales cu
 Sígueme en LinkedIn para más herramientas y publicaciones sobre nuestro stack.
 
 ## Registro de cambios
+
+**Noviembre 2026** - Cerramos los huecos que encontró una revisión externa del código y nos pusimos al día con lo que cambiamos en producción desde septiembre.
+- *Wrapper de push:* ahora comprueba la lista de no contactar (contacto y dominio de empresa), el estado del email, las respuestas previas, los campos de la plantilla, una aprobación firmada que incluye el hash de cada lead y de la plantilla, que la campaña corresponde al cliente, y la presencia en vivo en la plataforma, para no volver a subir un lead que ya está en cola o recibió un envío reciente en otra campaña. Regla opcional por cliente para excluir buzones personales.
+- *Blindaje:* la prueba es ahora por campaña y la escribe `scripts/verify-hardening.py` tras una lectura en vivo; la prueba de una campaña ya no desbloquea otra. El verificador también falla si hay una pausa entre emails a nivel de campaña (la pausa va en cada buzón) o si el porcentaje de seguimiento no es el acordado.
+- *Hooks:* leen las llamadas a herramientas MCP además de Bash y la escritura de ficheros, bloquean cuando no pueden interpretar una llamada, y exigen un motivo registrado para cualquier marcador de excepción.
+- *Comprobador de variación:* las despedidas en inglés, los saludos tipo "Hola, nombre", las líneas con solo el token del remitente y el bloque de cierre ya no cuentan como cuerpo; `--copy-field`; modo solo plantilla; se ignoran las variantes A/B eliminadas.
+- *Skill:* dividido de un único fichero de 138 KB en un índice de 8 KB más ficheros de fase que se leen cuando hacen falta. Nuevo: puerta de la oferta (ecuación de valor) antes de escribir copy, registro de cohorte, tipo de campaña para partners, justificantes de DNS y de enlaces antes del lanzamiento, porcentaje de seguimiento según el número de emails. Corregido: los pasos de "arreglar y volver a subir" tras el push que contradecían la regla de aprobación, la afirmación del 98% sobre 10 muestras, la nota obsoleta de deduplicación y la contradicción entre regex y modelo (los scripts cuentan, los modelos juzgan; sin sustituciones automáticas de palabras).
+- *Esquema:* clave única en contacts para que `ON CONFLICT` deduplique, `campaign_approvals`, y columnas para el estado del saludo y la identidad de la web.
+- *README:* una lista honesta de lo que se cumple por código, lo que es solo instrucción y lo que está descrito pero no incluido.
 
 **Septiembre 2026** - La sección 7.1 es ahora la comprobación de variación completa que pasamos antes de cada push: ninguna línea del cuerpo en más del 15% de los emails finales, cero líneas fijas y un 90% de emails distintos, con el script (`scripts/check-copy-variation.py`) y su test. Sustituye a las antiguas pautas de "~5 flujos de variación" y "3-5 puntos de spintax por frase". Además, el skill vuelve a reflejar cómo trabajamos de verdad: una revisión de emails reales con variantes de asunto bloquea cada push, la investigación escasa baja al contacto a un opener mínimo con fuente en lugar de sacarlo de la cohorte, los puentes elogian un logro y se revisan para que no se repitan, y hay nuevas barreras para emails caducados, exclusiones excesivas del ICP, nombres del saludo, siglas inventadas, de quién es la noticia, la estructura de la secuencia y su rotación. También hemos quitado cifras internas de los ejemplos, el esquema ya coincide con todas las consultas del skill, y publicamos una plantilla de configuración de cliente y un wrapper de push.
 
