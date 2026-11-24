@@ -157,6 +157,37 @@ python3 scripts/check-copy-variation.py --rendered rendered.json --client ACME \
   --exclusions '{"greeting": "^(bonjour|salut)\\b[^.!?,]{0,30}$", "signoff": "^(cordialement|bien à vous)$", "unsubscribe": "désinscri"}'
 ```
 
+## Puntos de contacto humanos: de 4 a 6 por campaña
+
+Antes el proceso se detenía a preguntar después de cada paso. En una ejecución larga eso eran decenas de síes pequeños y una campaña que tardaba días en salir. Ahora todas las aprobaciones se piden una sola vez, al principio, se guardan por ejecución de campaña y las comprobaciones las leen.
+
+| # | Qué se te pide | Cuándo |
+|---|---|---|
+| 1 | **El paquete de aprobaciones de la ejecución**: alcance, tamaño de la cohorte, un tope de gasto por proveedor, qué pasos se pueden saltar y bajo qué condición, el plan de búsqueda de contactos, quién escribe el copy, la política de excepción por falso positivo, "un lead dudoso se pausa, nunca se envía" y "sin confirmaciones paso a paso" | Al empezar |
+| 2 | **La oferta y 10 ejemplos reales** | Solo si la oferta o el prompt son nuevos o han cambiado |
+| 3 | **Visto bueno final del copy más la carga en BORRADOR de las campañas nombradas**, en una sola respuesta | Tras la validación previa a la carga |
+| 4 | **Puesta en marcha** | Tras la revisión posterior a la carga, el blindaje y la comprobación de capacidad |
+| 5 | **Un único resumen de excepciones** | Solo si algo ha saltado |
+
+Un sí con cualquier redacción cuenta. No hay ninguna frase que teclear.
+
+```bash
+python3 scripts/run-approvals.py propose --run acme-q1 --client ACME --plan plan.json   # imprime el único mensaje
+python3 scripts/run-approvals.py record  --run acme-q1 --reply "sí, todo bien menos el 6"
+python3 scripts/run-approvals.py status  --run acme-q1
+```
+
+Reglas que cumple el código, diga lo que diga la respuesta:
+
+- Un registro pertenece a **una sola ejecución de campaña**. Las aprobaciones de otra ejecución no se leen nunca.
+- Toda aprobación **caduca** (el paquete a las 72 horas por defecto; el visto bueno del copy y la puesta en marcha a las 24).
+- Un **punto rechazado no cuenta**. Si la respuesta menciona un importe distinto del tope mostrado, ese punto queda abierto.
+- Una **aprobación de gasto está ligada a su proveedor** y a un tope acumulado. El hook de llamadas de pago la lee.
+- Una **excepción basada en una cita debe nombrar la comprobación y ser posterior al paquete**, y nunca es posible para la lista de no contactar, el blindaje, las cargas ni los envíos.
+- El **visto bueno del copy** solo lo lee el wrapper de push. Está ligado a la huella del copy, al hash del fichero de leads, a los ids de campaña, a la cuenta de envío y a una caducidad, solo vale mientras la campaña está en DRAFTED o PAUSED, y nunca abre el hook de push para una carga directa por API o por MCP. **Nunca cubre la puesta en marcha**.
+
+Lo que no puede demostrar: que una persona escribió la respuesta. Guarda las palabras que recibe. Pega la respuesta real; no la escribas por ella.
+
 ## Qué se cumple por código y qué no
 
 Conviene tener claro qué estás instalando. Este repo es un procedimiento muy detallado, más una pequeña cantidad de código que hace cumplir las reglas allí donde un error no tiene vuelta atrás. La mayoría de las puertas del skill son instrucciones que Claude sigue; no son programas.
@@ -182,10 +213,22 @@ Conviene tener claro qué estás instalando. Este repo es un procedimiento muy d
 | Una línea del cuerpo en más del 15% de los emails, una línea fija, menos del 90% de emails distintos | `scripts/check-copy-variation.py` |
 | El token `NOT_FOUND` en los datos de un lead; spintax o `%signature%` dentro de un campo personalizado | hooks |
 | Bucle de llamadas a un modelo sin caché; resultados de pago guardados solo al final | hooks (heurísticos) |
+| Llamada a un proveedor de pago sin aprobación registrada y vigente para esa ejecución y ese proveedor, o por encima de su tope | `scripts/run-approvals.py` + hook de llamadas de pago |
+| Aprobación de otra ejecución, caducada, rechazada o con condiciones cambiadas | `scripts/run-approvals.py` |
+| Carga, puesta en marcha, envío o borrado escondidos dentro del paquete inicial | `scripts/run-approvals.py propose` |
+| Visto bueno del copy usado para otra campaña, cuenta, fichero de leads o copy, en una campaña ACTIVE, o para la puesta en marcha | `scripts/run-approvals.py` + `scripts/push-safe.py --signoff-run` |
+| La campaña pertenece a un cliente de la plataforma distinto del que indica la carga | `scripts/push-safe.py --platform-client-id` |
+| Recibo de copy que no es un aprobado, que es de otro copy distinto de las secuencias en vivo, o de otro fichero de leads | `scripts/push-safe.py --copy-receipt` |
+| Campaña sin ninguna secuencia | `scripts/check-copy-variation.py`, `scripts/push-safe.py` |
+| Lead fuera del registro de elegibilidad, cuando lo pasas (se aplica salvo que escribas `warn`) | `scripts/push-safe.py --eligible` |
+| Puesta en marcha sin prueba de capacidad de envío | `scripts/capacity-check.py` + hook de blindaje |
+| Marcador de excepción que no es un comentario final real, o indicador MCP que nombra otra campaña | hooks |
 
 ### Solo instrucciones (se le indica a Claude; nada impide saltarse el paso)
 
 El ritmo de consumo del TAM y el registro de cohorte, la puerta de la oferta (ecuación de valor), la comprobación de secuencias en curso, la verificación de citas de la fuente y de direcciones en la investigación, la comprobación de ICP, la identidad de la web (4.5), la comprobación de que el email pertenece a ese negocio (3.5), la confirmación del nombre del saludo, el bloqueo de la estructura de la secuencia, la escalera de iteración de prompts, el evaluador de copy, la comprobación de spam, el barrido completo del lote, la página de revisión de emails reales (el *fichero* de aprobación sí lo comprueba el código; construir y leer la revisión no), los justificantes de DNS y de enlaces antes del lanzamiento, la revisión posterior al push, el seguimiento y la retrospectiva.
+
+También son solo instrucciones, en el paquete de aprobaciones: que la respuesta guardada por `scripts/run-approvals.py` la escribió una persona; que Claude se detiene solo en los cinco puntos de contacto y deja todo lo demás en el resumen; que se ejecuta `bypass-check` antes de usar un marcador de excepción (el marcador sigue siendo solo un rastro de auditoría); que la comprobación de la oferta y la de los pasos saltados se llaman en el paso correcto; y los números que le das a `scripts/capacity-check.py`, que demuestra la suma y no los datos de entrada.
 
 ### Descrito pero no incluido (lo construyes tú, o Claude lo escribe en cada ejecución)
 
@@ -213,22 +256,29 @@ Una herramienta que ningún matcher les envía no se comprueba. Son guardas por 
 | `pretooluse-abstention-guard.sh` | Que el token `NOT_FOUND` llegue a un envío dirigido a un lead |
 | `pretooluse-prompt-cache-guard.sh` | Un bucle de llamadas a un modelo sin `cache_control` en el bloque de sistema. Por defecto es específico de Anthropic (`LLM_ENDPOINT_RE`); OpenAI cachea los prefijos largos automáticamente |
 | `pretooluse-durable-writes.sh` | Un bucle que gasta dinero por registro y guarda solo al final |
+| `pretooluse-paid-call-approved.sh` | Una llamada a un proveedor de pago (`CAMPAIGN_PAID_PROVIDERS`) sin `RUN_APPROVAL_SPEND=<ejecución>:<proveedor>:<usd>` respaldado por un paquete registrado y vigente para esa ejecución y ese proveedor, dentro de su tope. Cada sentencia se juzga por separado: `--dry-run` solo excusa la ejecución del script que lo lleva. Sin marcador de excepción |
+
+El hook de blindaje también rechaza una **puesta en marcha** sin una prueba de capacidad de envío de `scripts/capacity-check.py` (24 horas por defecto). Cargar leads en un borrador no la necesita.
+
+**Los comandos de solo lectura nunca se bloquean.** Los hooks leen un comando de Bash sentencia a sentencia. `grep`, `cat`, `sed -n`, `git show`, `git log`, `bash -n` y similares quedan fuera, igual que el cuerpo de un heredoc que solo se escribe en un fichero. Las continuaciones con barra invertida se unen, y `env`, `VAR=valor`, `bash -c`, `xargs`, `if` y las tuberías se abren, así que una acción detrás de ellos se sigue viendo. `find -exec`, `awk` con `system(`, `sed -i`, una sustitución de comando, una redirección a un fichero y una tubería hacia un intérprete no son de solo lectura.
 
 **Fallo cerrado.** Si un hook no puede interpretar la llamada que recibe, la bloquea.
 
 ### Marcadores de excepción
 
-Todos los hooks, salvo la regla de la lista de bloqueo, aceptan un marcador puntual en el comando: `PUSH_SAFE_OK:`, `HARDENING_OK:`, `CUSTOM_FIELD_OK:`, `ABSTENTION_OK:`, `CACHE_OK:`, `DURABLE_WRITES_OK:`, seguido de un motivo de al menos 10 caracteres. El motivo, la herramienta y la hora se añaden a `.claude/<hook>-bypass.log`; un marcador sin motivo se bloquea.
+Todos los hooks, salvo la regla de la lista de bloqueo, aceptan un marcador puntual en el comando: `PUSH_SAFE_OK:`, `HARDENING_OK:`, `CUSTOM_FIELD_OK:`, `ABSTENTION_OK:`, `CACHE_OK:`, `DURABLE_WRITES_OK:`, seguido de un motivo de al menos 10 caracteres. En un comando de shell el marcador debe ser un comentario final real en la última línea (`<comando>  # PUSH_SAFE_OK: motivo`); dentro de una cadena entre comillas, de un echo o de una línea anterior se ignora. En una llamada MCP es un campo de entrada (`push_safe_ok`, `hardening_ok`) cuyo valor es `campaign=<id>; motivo`, y el id debe ser el de la campaña que nombra la llamada. El motivo, la herramienta y la hora se añaden a `.claude/<hook>-bypass.log`; un marcador sin motivo se bloquea.
 
 Un marcador es un rastro de auditoría, no un control: el propio agente vigilado puede escribirlo. Lee los logs y, si no quieres marcadores, define `CAMPAIGN_HOOKS_NO_BYPASS=1`. Del mismo modo, el fichero de aprobación demuestra que lo que se sube es lo que se revisó, no que lo firmó una persona. Mantén a una persona en la aprobación.
 
 ### Compruébalo antes de fiarte
 
 ```bash
-bash .claude/hooks/tests/run-tests.sh            # 65 casos de hooks
-python3 scripts/tests/test-push-safe.py          # 39 comprobaciones del wrapper contra una plataforma simulada, sin red
+bash .claude/hooks/tests/run-tests.sh            # 151 casos de hooks
+python3 scripts/tests/test-push-safe.py          # 65 comprobaciones del wrapper contra una plataforma simulada, sin red
+python3 scripts/tests/test-run-approvals.py      # 78 comprobaciones de aprobaciones
+python3 scripts/tests/test-capacity-check.py     # 15 comprobaciones
 python3 scripts/tests/test-verify-hardening.py   # 10 comprobaciones
-bash scripts/tests/test-check-copy-variation.sh  # 19 casos
+bash scripts/tests/test-check-copy-variation.sh  # 24 casos
 ```
 
 A cada puerta se le da una entrada mala que debe rechazar y una buena que debe dejar pasar. Una puerta que nunca se ha puesto en rojo puede estar funcionando, o puede no estar haciendo nada. Este repo no tiene integración continua; ejecútalos tú después de cada cambio.
@@ -250,6 +300,8 @@ SMARTLEAD_API_KEY=... python3 scripts/push-safe.py --campaign 12345 --client ACM
   --template e1.html --approval approval.json --apply
 ```
 
+Con `--apply` el wrapper necesita ahora también `--platform-client-id <id>` (0 para una campaña de tu propia cuenta), `--copy-receipt <el informe PASS de check-copy-variation.py, hecho con --leads-file>` y una aprobación: `--approval approval.json` o bien `--signoff-run <ejecución>` (el visto bueno del copy registrado). `--eligible <fichero>` descarta cualquier lead que no esté en tu registro de elegibilidad.
+
 ### Variables de entorno
 
 | Variable | La usa | Por defecto | Qué hace |
@@ -260,6 +312,10 @@ SMARTLEAD_API_KEY=... python3 scripts/push-safe.py --campaign 12345 --client ACM
 | `CAMPAIGN_HOOKS_NO_BYPASS` | todos los hooks | sin definir | Ponlo a `1` para desactivar todos los marcadores de excepción |
 | `CAMPAIGN_STATE_DIR` | hook de blindaje, `scripts/verify-hardening.py` | `.claude/campaign-state` | Dónde se escriben y se leen las pruebas de blindaje |
 | `CAMPAIGN_HOOK_LOG_DIR` | todos los hooks | `.claude` | Dónde se escriben los logs de auditoría de excepciones |
+| `CAPACITY_MAX_AGE_MIN` | hook de blindaje de entregabilidad | `1440` | Minutos que es válida una prueba de capacidad de envío |
+| `CAMPAIGN_PAID_PROVIDERS` | hook de llamadas de pago | una lista corta de proveedores habituales de datos y verificación | Pares `nombre=regex` separados por comas. El nombre es la clave para la que apruebas un tope |
+| `RUN_APPROVALS_SCRIPT` | hook de llamadas de pago | `scripts/run-approvals.py` | Ruta al script de aprobaciones, si lo has movido |
+| `CAMPAIGN_ELIGIBILITY_MODE` | `scripts/push-safe.py` | aplicar | Solo el valor `warn` rebaja el filtro de elegibilidad |
 | `HARDENING_MAX_AGE_MIN` | hook de blindaje de entregabilidad | `120` | Minutos que es válida una prueba de blindaje |
 | `ABSTENTION_TOKEN` | hook de abstención | `NOT_FOUND` | El token que devuelven tus prompts cuando la fuente no respalda una respuesta |
 | `LLM_ENDPOINT_RE` | hook de caché de prompt | `api\.anthropic\.com/v1/messages` | Regex de los endpoints de modelos que vigila el hook |
@@ -289,6 +345,12 @@ Nuestra metodología de copywriting ha sido moldeada por varios profesionales cu
 Sígueme en LinkedIn para más herramientas y publicaciones sobre nuestro stack.
 
 ## Registro de cambios
+
+**Noviembre 2026, segunda actualización** - Un solo conjunto de aprobaciones por campaña y una segunda ronda de correcciones tras la revisión.
+- *Paquete de aprobaciones:* `scripts/run-approvals.py` pide todas las aprobaciones una vez, las guarda por ejecución y las comprobaciones las leen. De 4 a 6 puntos de contacto humanos en lugar de uno por paso. Las aprobaciones valen para una sola ejecución, caducan, están ligadas a su proveedor, y un punto rechazado nunca cuenta. Una sola respuesta cubre el visto bueno final del copy y la carga en BORRADOR; nunca cubre la puesta en marcha.
+- *Wrapper de push:* se niega cuando la campaña pertenece a otro cliente de la plataforma; exige un recibo de copy que coincida con las secuencias en vivo y con el fichero de leads exacto; rechaza una campaña sin secuencias; el filtro de elegibilidad se aplica salvo que escribas `warn`.
+- *Hooks:* leen los comandos sentencia a sentencia, así que los comandos de solo lectura nunca se bloquean y las acciones detrás de continuaciones, `env`, `bash -c`, `xargs`, `if` y tuberías se siguen viendo; los marcadores de excepción deben ser comentarios finales reales con un motivo y el indicador MCP debe nombrar la campaña; nuevo hook de llamadas de pago; la puesta en marcha exige una prueba de capacidad de envío.
+- *Comprobación de variación del copy:* cero secuencias es un rechazo, no un aprobado; el recibo registra el hash del fichero de leads y una huella de las plantillas.
 
 **Noviembre 2026** - Cerramos los huecos que encontró una revisión externa del código y nos pusimos al día con lo que cambiamos en producción desde septiembre.
 - *Wrapper de push:* ahora comprueba la lista de no contactar (contacto y dominio de empresa), el estado del email, las respuestas previas, los campos de la plantilla, una aprobación firmada que incluye el hash de cada lead y de la plantilla, que la campaña corresponde al cliente, y la presencia en vivo en la plataforma, para no volver a subir un lead que ya está en cola o recibió un envío reciente en otra campaña. Regla opcional por cliente para excluir buzones personales.

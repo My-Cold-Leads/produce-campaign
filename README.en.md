@@ -157,6 +157,37 @@ python3 scripts/check-copy-variation.py --rendered rendered.json --client ACME \
   --exclusions '{"greeting": "^(bonjour|salut)\\b[^.!?,]{0,30}$", "signoff": "^(cordialement|bien à vous)$", "unsubscribe": "désinscri"}'
 ```
 
+## Human touchpoints: 4 to 6 per campaign
+
+The pipeline used to stop and ask after every step. On a long run that meant dozens of small yeses, and a campaign that took days to leave. Now every approval is asked for once, up front, saved per campaign run, and read by the gates.
+
+| # | You are asked | When |
+|---|---|---|
+| 1 | **The run approval bundle**: scope, cohort size, a spend cap per provider, which steps may be skipped and under what condition, the contact search plan, who writes the copy, the false-positive bypass policy, "an unsure lead is paused, never sent", and "no per-step confirmations" | Start of the run |
+| 2 | **The offer and 10 real examples** | Only if the offer or the prompt is new or changed |
+| 3 | **Final copy sign-off plus the DRAFT push of the named campaigns**, in one reply | After pre-push validation |
+| 4 | **Go-live** | After post-push review, hardening and the capacity check |
+| 5 | **One exceptions digest** | Only if something tripped |
+
+A yes in any wording counts. There is no phrase to type.
+
+```bash
+python3 scripts/run-approvals.py propose --run acme-q1 --client ACME --plan plan.json   # prints the one message
+python3 scripts/run-approvals.py record  --run acme-q1 --reply "yes, all good except 6"
+python3 scripts/run-approvals.py status  --run acme-q1
+```
+
+Rules the code holds, whatever the reply says:
+
+- A record belongs to **one campaign run**. Another run's approvals are never read.
+- Every approval **expires** (bundle 72 hours by default, copy sign-off and go-live 24).
+- A **declined item does not count**. A reply that names a different amount than the cap shown leaves that item open.
+- A **spend approval is bound to its provider** and to a cumulative cap. The paid-call hook reads it.
+- A **quote-based bypass must name the gate and come after the bundle**, and is never possible for suppression, hardening, pushes or sends.
+- The **copy sign-off** is read only by the push wrapper. It is bound to the copy fingerprint, the leads-file hash, the campaign ids, the sending account and an expiry, works only while the campaign is DRAFTED or PAUSED, and never opens the push hook for a raw API or MCP push. It **never covers go-live**.
+
+What it cannot prove: that a person typed the reply. It saves the words it is given. Paste the real reply; do not write it for them.
+
 ## What is enforced by code, and what is not
 
 Be clear about what you are installing. This repo is a detailed runbook, plus a small amount of code that enforces the rules where a mistake cannot be undone. Most of the gates in the skill are instructions that Claude follows; they are not programs.
@@ -182,10 +213,22 @@ Be clear about what you are installing. This repo is a detailed runbook, plus a 
 | A body line in more than 15% of emails, a fixed line, under 90% distinct | `scripts/check-copy-variation.py` |
 | `NOT_FOUND` token in a lead payload; spintax or `%signature%` inside a custom field | hooks |
 | Uncached model loop; paid results buffered and written at the end | hooks (heuristics) |
+| Paid provider call with no recorded, unexpired approval for that run and that provider, or over its cap | `scripts/run-approvals.py` + paid-call hook |
+| Approval from another run, expired, declined, or with changed terms | `scripts/run-approvals.py` |
+| Push, go-live, send or deletion hidden inside the up-front bundle | `scripts/run-approvals.py propose` |
+| Copy sign-off used for another campaign, account, leads file or copy, on an ACTIVE campaign, or for go-live | `scripts/run-approvals.py` + `scripts/push-safe.py --signoff-run` |
+| Campaign belongs to a different platform client than the push says | `scripts/push-safe.py --platform-client-id` |
+| Copy receipt that is not a pass, is for other copy than the live sequences, or for another leads file | `scripts/push-safe.py --copy-receipt` |
+| Campaign with zero sequences | `scripts/check-copy-variation.py`, `scripts/push-safe.py` |
+| Lead outside the eligibility ledger, when you pass one (enforced unless you type `warn`) | `scripts/push-safe.py --eligible` |
+| Going live with no sending-capacity proof | `scripts/capacity-check.py` + hardening hook |
+| Bypass marker that is not a real trailing comment, or an MCP flag that names another campaign | hooks |
 
 ### Instructions only (Claude is told to do it; nothing stops a skipped step)
 
 TAM pacing and the cohort ledger, the offer / value-equation gate, the in-flight check, research source-quote checks and address anchoring, the ICP check, the website identity check (4.5), the email-belongs-to-this-business check (3.5), greeting name confirmation, the sequence structure lock, the prompt iteration ladder, the copy grader, the spam check, the full-batch sweep, the real-email review page (the approval *file* is checked by code, building and reading the review is not), the DNS and link receipts before launch, post-push review, monitoring and the retro.
+
+Also instruction only, for the approval bundle: that the reply saved by `scripts/run-approvals.py` was typed by a person; that Claude stops only at the five touchpoints and puts everything else in the digest; that `bypass-check` is run before a bypass marker is used (the marker itself is still only an audit trail); that the offer check and the skip check are called at the right step; and the numbers you give `scripts/capacity-check.py`, which proves the sum and not the inputs.
 
 ### Described but not shipped (you build these, or let Claude write them per run)
 
@@ -213,22 +256,29 @@ A tool that no matcher routes to them is not checked. They are pattern guards, n
 | `pretooluse-abstention-guard.sh` | The `NOT_FOUND` abstention token reaching a payload bound for a lead |
 | `pretooluse-prompt-cache-guard.sh` | A loop of LLM calls with no `cache_control` on the system block. Anthropic-specific by default (`LLM_ENDPOINT_RE`); OpenAI caches long prefixes automatically |
 | `pretooluse-durable-writes.sh` | A loop that spends money per record and writes only at the end |
+| `pretooluse-paid-call-approved.sh` | A call to a paid provider (`CAMPAIGN_PAID_PROVIDERS`) without `RUN_APPROVAL_SPEND=<run>:<provider>:<usd>` backed by a recorded, unexpired bundle for that run and that provider, inside its cap. Each statement is judged by itself: `--dry-run` only excuses the script run that carries it. No bypass marker |
+
+The hardening hook also refuses a **start** without a sending-capacity proof from `scripts/capacity-check.py` (24 hours by default). Loading leads into a draft does not need it.
+
+**Read-only commands are never blocked.** The hooks read a Bash command statement by statement. `grep`, `cat`, `sed -n`, `git show`, `git log`, `bash -n` and similar are left out, and so is a heredoc body that is only written to a file. Backslash continuations are joined, and `env`, `VAR=value`, `bash -c`, `xargs`, `if` and pipes are opened, so an action behind them is still seen. `find -exec`, `awk` with `system(`, `sed -i`, a command substitution, a redirect into a file and a pipe into a shell are not read-only.
 
 **Fail closed.** If a hook cannot parse the tool call it was given, it blocks.
 
 ### Bypass markers
 
-Each hook except the suppression-list rule accepts a one-off marker in the command: `PUSH_SAFE_OK:`, `HARDENING_OK:`, `CUSTOM_FIELD_OK:`, `ABSTENTION_OK:`, `CACHE_OK:`, `DURABLE_WRITES_OK:`, followed by a reason of at least 10 characters. The reason, tool and time are appended to `.claude/<hook>-bypass.log`; a marker without a reason is blocked.
+Each hook except the suppression-list rule accepts a one-off marker in the command: `PUSH_SAFE_OK:`, `HARDENING_OK:`, `CUSTOM_FIELD_OK:`, `ABSTENTION_OK:`, `CACHE_OK:`, `DURABLE_WRITES_OK:`, followed by a reason of at least 10 characters. In a shell command the marker must be a real trailing comment on the last line (`<command>  # PUSH_SAFE_OK: reason`); inside a quoted string, an echo or an earlier line it is ignored. In an MCP call it is an input field (`push_safe_ok`, `hardening_ok`) whose value is `campaign=<id>; reason`, and the id must be the campaign the call names. The reason, tool and time are appended to `.claude/<hook>-bypass.log`; a marker without a reason is blocked.
 
 A marker is an audit trail, not a control: the agent being guarded can type one. Read the logs, and if you do not want markers at all, set `CAMPAIGN_HOOKS_NO_BYPASS=1`. Likewise the approval file proves the push set is the reviewed set, not that a person signed it. Keep a human on the approval.
 
 ### Prove they work before you trust them
 
 ```bash
-bash .claude/hooks/tests/run-tests.sh            # 65 hook fixtures
-python3 scripts/tests/test-push-safe.py          # 39 wrapper checks against a fake platform, no network
+bash .claude/hooks/tests/run-tests.sh            # 151 hook fixtures
+python3 scripts/tests/test-push-safe.py          # 65 wrapper checks against a fake platform, no network
+python3 scripts/tests/test-run-approvals.py      # 78 approval checks
+python3 scripts/tests/test-capacity-check.py     # 15 checks
 python3 scripts/tests/test-verify-hardening.py   # 10 checks
-bash scripts/tests/test-check-copy-variation.sh  # 19 fixtures
+bash scripts/tests/test-check-copy-variation.sh  # 24 fixtures
 ```
 
 Each gate is fed a known-bad input it must refuse and a known-good input it must allow. A gate that has never gone red might be working, or might be silently doing nothing. There is no CI in this repo; run them yourself after every change.
@@ -250,6 +300,8 @@ SMARTLEAD_API_KEY=... python3 scripts/push-safe.py --campaign 12345 --client ACM
   --template e1.html --approval approval.json --apply
 ```
 
+With `--apply` the wrapper now also needs `--platform-client-id <id>` (0 for a campaign in your own account), `--copy-receipt <the PASS report of check-copy-variation.py, made with --leads-file>`, and an approval: either `--approval approval.json` or `--signoff-run <run>` (the recorded copy sign-off). `--eligible <file>` skips any lead that is not in your eligibility ledger.
+
 ### Environment variables
 
 | Variable | Used by | Default | What it does |
@@ -260,6 +312,10 @@ SMARTLEAD_API_KEY=... python3 scripts/push-safe.py --campaign 12345 --client ACM
 | `CAMPAIGN_HOOKS_NO_BYPASS` | all hooks | unset | Set to `1` to switch every bypass marker off |
 | `CAMPAIGN_STATE_DIR` | hardening hook, `scripts/verify-hardening.py` | `.claude/campaign-state` | Where hardening proofs are written and read |
 | `CAMPAIGN_HOOK_LOG_DIR` | all hooks | `.claude` | Where bypass audit logs are written |
+| `CAPACITY_MAX_AGE_MIN` | deliverability hardening hook | `1440` | Minutes a sending-capacity proof stays valid |
+| `CAMPAIGN_PAID_PROVIDERS` | paid-call hook | a short list of common data and verification providers | `name=regex` pairs, comma separated. The name is the key you approve a cap for |
+| `RUN_APPROVALS_SCRIPT` | paid-call hook | `scripts/run-approvals.py` | Path to the approvals script, if you moved it |
+| `CAMPAIGN_ELIGIBILITY_MODE` | `scripts/push-safe.py` | enforce | Only the value `warn` downgrades the eligibility filter |
 | `HARDENING_MAX_AGE_MIN` | deliverability hardening hook | `120` | Minutes a hardening proof file stays valid |
 | `ABSTENTION_TOKEN` | abstention hook | `NOT_FOUND` | The token your prompts return when the source does not support an answer |
 | `LLM_ENDPOINT_RE` | prompt-cache hook | `api\.anthropic\.com/v1/messages` | Regex for the LLM endpoints the hook watches |
@@ -289,6 +345,12 @@ Our copywriting methodology has been shaped by several practitioners whose work 
 Follow me on LinkedIn for more tools and posts about our stack.
 
 ## Changelog
+
+**November 2026, second update** - One set of approvals per campaign, and a second round of gate fixes from review.
+- *Run approval bundle:* `scripts/run-approvals.py` asks for every approval once, saves it per run, and the gates read it. 4 to 6 human touchpoints instead of one per step. Approvals are scoped to one run, expire, are bound to their provider, and a declined item never counts. One reply covers the final copy sign-off and the DRAFT push; it never covers go-live.
+- *Push wrapper:* refuses when the campaign belongs to another platform client; requires a copy receipt that matches the live sequences and the exact leads file; refuses a campaign with zero sequences; the eligibility filter enforces unless you type `warn`.
+- *Hooks:* read commands statement by statement, so read-only commands are never blocked and actions behind continuations, `env`, `bash -c`, `xargs`, `if` and pipes are still seen; bypass markers must be real trailing comments with a reason and the MCP flag must name the campaign; new paid-call hook; go-live needs a sending-capacity proof.
+- *Copy variation checker:* zero sequences is a refusal, not a pass; the receipt records the leads-file hash and a template fingerprint.
 
 **November 2026** - Closed the gaps an outside code review found, and caught up with what we changed in production since September.
 - *Push wrapper:* now checks suppression (contact and company domain), email status, prior replies, merge fields, a signed approval that hashes every lead and the template, that the campaign matches the client, and live platform membership so a lead already queued or recently sent elsewhere is not pushed again. Optional per-client rule to exclude personal mailboxes.
