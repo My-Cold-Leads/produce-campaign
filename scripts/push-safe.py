@@ -14,7 +14,7 @@ Gates, in order. Every skipped lead is printed with its reason:
      change with --allow-status). Database mode reads contacts.email_status and skips anyone
      with no contacts row. File mode reads the email_status column of the lead file.
   5. Prior reply outcome (database mode): anyone who already answered interested, booked a
-     meeting, asked for information, or said wrong person / left the company is never
+     meeting, asked for information, unsubscribed, or said wrong person / left the company is never
      cold-emailed again for this client, however old the reply.
   6. Cooldown: anyone in your outreach log for this client whose
      COALESCE(first_sent_date, loaded_date) is inside the window (90 days by default) is skipped.
@@ -97,7 +97,7 @@ zoho.com yandex.com yandex.ru telefonica.net terra.es orange.fr wanadoo.fr free.
 t-online.de btinternet.com comcast.net""".split())
 # Reply categories that end cold outreach to that person for this client for good.
 PERMANENT_OUTCOMES = ("interested", "meeting_booked", "meeting_request", "information_request",
-                      "forwarded_internally", "wrong_person", "left_company", "unsubscribe")
+                      "wrong_person", "left_company", "unsubscribe")
 FINISHED_STATUSES = frozenset(("COMPLETED", "STOPPED", "ARCHIVED"))
 
 
