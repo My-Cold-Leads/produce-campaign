@@ -31,10 +31,9 @@ If you remember nothing else from this document, remember these. Every gate belo
 
 **Claude MUST NOT skip any phase without the user saying "skip [phase name]" explicitly.** If a phase seems unnecessary (e.g., "we just refreshed the data"), still run the check, confirm it's clean, report the result, then move on. The overhead of checking is seconds; the cost of skipping and being wrong is hours.
 
-After completing each phase, state:
-> "Phase [N] complete. [One-line result]. Moving to Phase [N+1]: [what it does]. Proceed?"
+**Ask once, up front.** Before any data work, build the run approval bundle (`.claude/produce-campaign/phases/00b-run-approval-bundle.md`) and get it answered. After that, run to the next touchpoint without asking "Proceed?" between phases. After each phase, state one line: "Phase [N] complete. [Result]. Moving to Phase [N+1]."
 
-Do not proceed to the next phase until the user says yes. The user may approve a named run of phases up front ("run Phases 2 to 4"); inside that run, report each phase result and continue. An up-front yes never covers three things, which each need their own yes every time: a paid run's cost estimate (6.5), the push approval gate, and the launch gate (Phase 11).
+Stop for the user only at these touchpoints: (1) the up-front bundle, (2) the offer and 10 examples, only if new or changed, (3) final copy sign-off plus the DRAFT push of the named campaigns, in one reply, (4) go-live, (5) one exceptions digest, only if something tripped. A yes in any wording counts. The bundle never covers the copy sign-off, the push or go-live: those are touchpoints 3 and 4. Anything else that comes up goes into the exceptions digest while you carry on with the work it does not affect.
 
 ### What is enforced by code, and what is an instruction
 
@@ -60,6 +59,7 @@ This file holds the rules that apply to every phase and the index. Each phase li
 | Phase | File | Read it |
 |---|---|---|
 | Phase 0: TAM creation | `.claude/produce-campaign/phases/00-tam-creation.md` | First run for a client, or when the TAM is rebuilt |
+| Run approval bundle and touchpoints | `.claude/produce-campaign/phases/00b-run-approval-bundle.md` | Start of every run, before any data work or paid call |
 | Phase 1: session setup, pacing, cohort ledger | `.claude/produce-campaign/phases/01-session-setup.md` | Start of every session |
 | Phase 2: contact selection | `.claude/produce-campaign/phases/02-contact-selection.md` | Before selecting the cohort |
 | Phase 3: email validation | `.claude/produce-campaign/phases/03-email-validation.md` | Before any verification spend |
