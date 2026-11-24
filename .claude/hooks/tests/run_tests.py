@@ -11,8 +11,16 @@ import os
 import subprocess
 import sys
 
+import datetime
+import tempfile
+
 HOOKS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 passed = failed = 0
+# Proofs and audit logs go to a throwaway directory, never into the repo.
+SCRATCH = tempfile.mkdtemp()
+STATE_DIR = os.path.join(SCRATCH, "campaign-state")
+os.makedirs(STATE_DIR)
+BASE_ENV = {"CAMPAIGN_STATE_DIR": STATE_DIR, "CAMPAIGN_HOOK_LOG_DIR": SCRATCH}
 
 FLAG_A = "ignore_" + "global_block_list"
 FLAG_B = "ignore_" + "unsubscribe_list"
@@ -28,9 +36,38 @@ def payload(cmd=None, content=None, path="/tmp/fixture.py"):
     return json.dumps({"tool_name": "Bash" if cmd is not None else "Write", "tool_input": ti})
 
 
+def mcp(tool, **tool_input):
+    return json.dumps({"tool_name": "mcp__sender__" + tool, "tool_input": tool_input})
+
+
+def proof(campaign_id, minutes_old=0, body=None, **checks):
+    """Write a hardening proof the way scripts/verify-hardening.py does."""
+    when = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes_old)
+    ok = {"open_tracking_off": True, "click_tracking_off": True, "plain_text_on": True}
+    ok.update(checks)
+    path = os.path.join(STATE_DIR, "hardening-%s.ok" % campaign_id)
+    with open(path, "w") as fh:
+        fh.write(body if body is not None else json.dumps(
+            {"campaign_id": str(campaign_id), "checks": ok, "verified_at": when.isoformat()}))
+
+
+def clear_proofs():
+    for name in os.listdir(STATE_DIR):
+        os.remove(os.path.join(STATE_DIR, name))
+
+
+def audit(name):
+    try:
+        return open(os.path.join(SCRATCH, name), encoding="utf-8").read()
+    except OSError:
+        return ""
+
+
 def run(label, hook, expect, body, env=None):
     global passed, failed
     e = dict(os.environ)
+    e.pop("CAMPAIGN_HOOKS_NO_BYPASS", None)
+    e.update(BASE_ENV)
     if env:
         e.update(env)
     p = subprocess.run([os.path.join(HOOKS, hook)], input=body,
@@ -121,6 +158,78 @@ run("blocks buffer-then-flush", "pretooluse-durable-writes.sh", "block",
     payload(content='out=[]\nfor c in cos:\n    r=get("https://serper.dev/search")\n    out.append(r)\ndb.insert(out)'))
 run("allows a per-record write", "pretooluse-durable-writes.sh", "allow",
     payload(content='for c in cos:\n    r=get("https://serper.dev/search")\n    db.insert(r)\n    out.append(r)'))
+
+ALL_HOOKS = ("pretooluse-push-safe-required.sh", "pretooluse-deliverability-hardening.sh", "pretooluse-custom-field-syntax.sh",
+             "pretooluse-abstention-guard.sh", "pretooluse-prompt-cache-guard.sh", "pretooluse-durable-writes.sh")
+print("fail closed on an envelope the hook cannot parse:")
+for h in ALL_HOOKS:
+    run("%s blocks malformed JSON" % h, h, "block", '{"tool_name": "Bash", "tool_input": {"command": "curl ')
+run("blocks an empty envelope", "pretooluse-push-safe-required.sh", "block", "")
+run("blocks a tool_input that is not an object", "pretooluse-deliverability-hardening.sh", "block",
+    json.dumps({"tool_name": "Bash", "tool_input": "curl -X POST /campaigns/9/status"}))
+
+print("MCP tool calls are inspected too:")
+run("blocks a lead push made through an MCP tool", "pretooluse-push-safe-required.sh", "block",
+    mcp("add_leads_to_campaign", campaign_id=9, lead_list=[{"email": "ana@example.com"}]))
+run("blocks a suppression bypass inside an MCP tool input", "pretooluse-push-safe-required.sh", "block",
+    mcp("update_settings", campaign_id=9, settings={FLAG_A: True}))
+run("allows a read-only MCP tool", "pretooluse-push-safe-required.sh", "allow", mcp("get_campaign_leads", campaign_id=9))
+run("blocks the abstention token in an MCP lead push", "pretooluse-abstention-guard.sh", "block",
+    mcp("add_leads_to_campaign", campaign_id=9, lead_list=[{"email": "ana@example.com", "custom_fields": {"obs": "NOT_FOUND"}}]))
+run("blocks spintax in a custom field sent through an MCP tool", "pretooluse-custom-field-syntax.sh", "block",
+    mcp("add_leads_to_campaign", campaign_id=9, lead_list=[{"custom_fields": {"body": "{Hola|Hey} que tal"}}]))
+run("blocks an MCP campaign start without proof", "pretooluse-deliverability-hardening.sh", "block",
+    mcp("update_campaign_status", campaign_id=9, status="START"))
+run("allows an MCP pause without proof (pausing is the safety action)", "pretooluse-deliverability-hardening.sh", "allow",
+    mcp("update_campaign_status", campaign_id=9, status="PAUSED"))
+
+print("hardening proof is scoped to one campaign:")
+START_9 = payload(cmd='curl -X POST /campaigns/9/status -d \'{"status":"START"}\'')
+APPLY_9 = payload(cmd='python3 scripts/push-safe.py --campaign 9 --leads x.csv --approval a.json --apply')
+proof(8)
+run("RED: a fresh proof for campaign 8 does not unlock a start on campaign 9", "pretooluse-deliverability-hardening.sh", "block", START_9)
+run("RED: a fresh proof for campaign 8 does not unlock a push to campaign 9", "pretooluse-deliverability-hardening.sh", "block", APPLY_9)
+run("RED: nor an MCP start on campaign 9", "pretooluse-deliverability-hardening.sh", "block",
+    mcp("update_campaign_status", campaign_id=9, status="START"))
+run("the proof for campaign 8 unlocks campaign 8", "pretooluse-deliverability-hardening.sh", "allow",
+    payload(cmd='python3 scripts/push-safe.py --campaign 8 --leads x.csv --approval a.json --apply'))
+run("RED: a send with no readable campaign id is blocked even with a proof on disk", "pretooluse-deliverability-hardening.sh", "block",
+    payload(cmd='python3 scripts/push-safe.py --campaign "$CID" --leads x.csv --apply'))
+proof(9)
+run("a proof for campaign 9 unlocks the start", "pretooluse-deliverability-hardening.sh", "allow", START_9)
+run("and the wrapper's --apply", "pretooluse-deliverability-hardening.sh", "allow", APPLY_9)
+run("and the MCP start", "pretooluse-deliverability-hardening.sh", "allow", mcp("update_campaign_status", campaign_id=9, status="START"))
+proof(9, body="")
+run("RED: an empty file made with touch is not a proof", "pretooluse-deliverability-hardening.sh", "block", START_9)
+proof(9, minutes_old=500)
+run("RED: a stale proof is refused", "pretooluse-deliverability-hardening.sh", "block", START_9)
+proof(9, plain_text_on=False)
+run("RED: a proof that shows plain text off is refused", "pretooluse-deliverability-hardening.sh", "block", START_9)
+proof(9, body=json.dumps({"campaign_id": "8", "checks": {"open_tracking_off": True, "click_tracking_off": True, "plain_text_on": True},
+                          "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+run("RED: a proof copied from another campaign is refused", "pretooluse-deliverability-hardening.sh", "block", START_9)
+clear_proofs()
+
+print("bypass markers need a reason, and the reason is logged:")
+RAW = 'curl -X POST https://api.x.com/campaigns/123/leads -d @leads.json'
+run("RED: a marker with no reason is blocked", "pretooluse-push-safe-required.sh", "block", payload(cmd=RAW + "  # PUSH_SAFE_OK:"))
+run("RED: a marker with a token reason is blocked", "pretooluse-push-safe-required.sh", "block", payload(cmd=RAW + "  # PUSH_SAFE_OK: ok"))
+run("a marker with a real reason is allowed", "pretooluse-push-safe-required.sh", "allow",
+    payload(cmd=RAW + "  # PUSH_SAFE_OK: one-off repair approved by the account owner"))
+if "reason=one-off repair approved by the account owner" in audit("push-safe-bypass.log"):
+    print("  PASS  the reason is in the audit log"); passed += 1
+else:
+    print("  FAIL  the reason is in the audit log"); failed += 1
+run("RED: markers can be switched off entirely", "pretooluse-push-safe-required.sh", "block",
+    payload(cmd=RAW + "  # PUSH_SAFE_OK: one-off repair approved by the account owner"), env={"CAMPAIGN_HOOKS_NO_BYPASS": "1"})
+run("RED: the suppression-list rule ignores every marker", "pretooluse-push-safe-required.sh", "block",
+    payload(cmd=FLAG_B + "=true  # PUSH_SAFE_OK: one-off repair approved by the account owner"))
+run("a hardening marker with a reason is allowed and logged", "pretooluse-deliverability-hardening.sh", "allow",
+    payload(cmd='curl -X POST /campaigns/9/status -d \'{"status":"START"}\'  # HARDENING_OK: verified by hand in the platform UI today'))
+if "campaigns=9" in audit("hardening-bypass.log"):
+    print("  PASS  the hardening bypass log names the campaign"); passed += 1
+else:
+    print("  FAIL  the hardening bypass log names the campaign"); failed += 1
 
 print(f"\nRESULT: passed={passed} failed={failed}")
 sys.exit(1 if failed else 0)

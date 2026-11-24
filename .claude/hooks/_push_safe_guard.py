@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import hookinput as H  # noqa: E402
 
 MARKER = "PUSH_SAFE_OK:"
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "push-safe-bypass.log")
+LOG = H.log_path("push-safe-bypass.log")
 
 # The wrapper this repo ships is scripts/push-safe.py. Set PUSH_SAFE_WRAPPER to
 # the base name of your own wrapper if you renamed it.
@@ -24,6 +24,8 @@ RAW_PUSH = re.compile(
     r"""(POST|--request\s+POST|-X\s*POST|method:\s*["']POST["'])""" r"""[\s\S]{0,400}?/campaigns/[^/\s"']+/leads""",
     re.I,
 )
+# The same push made through an MCP tool instead of the shell.
+MCP_PUSH = re.compile(r"(add|push|upload|import)_?leads", re.I)
 RAW_PUSH_ALT = re.compile(r"""/campaigns/[^/\s"']+/leads[\s\S]{0,200}?(POST|-X\s*POST)""", re.I)
 
 
@@ -39,8 +41,6 @@ def main():
     hay = H.haystack(payload)
     if not hay.strip():
         H.allow()
-
-    bypassed = H.has_marker(payload, MARKER)
 
     if SUPPRESSION_OFF.search(hay):
         # This one is NEVER bypassable. It does not even work: the platform
@@ -63,15 +63,15 @@ def main():
     if is_wrapper_source(payload):
         H.allow()
 
-    if RAW_PUSH.search(hay) or RAW_PUSH_ALT.search(hay):
-        if bypassed:
-            H.log(LOG, f"BYPASS raw-push tool={H.tool_name(payload)}")
+    mcp_push = H.is_mcp(payload) and MCP_PUSH.search(H.tool_name(payload))
+    if RAW_PUSH.search(hay) or RAW_PUSH_ALT.search(hay) or mcp_push:
+        if H.bypass(payload, MARKER, LOG, detail="raw-push"):
             H.allow()
         H.block(
-            "BLOCKED: raw lead push detected. Route it through your push wrapper:\n"
-            f"  python3 scripts/{WRAPPER}.py --campaign <id> --client <name> --leads leads.csv\n"
-            "  (dry run by default; add --apply after the push approval gate)\n\n"
-            "The wrapper is where three things happen that the raw endpoint does not do:\n"
+            "BLOCKED: raw lead push detected (shell, script or MCP tool). Route it through the wrapper:\n"
+            f"  python3 scripts/{WRAPPER}.py --campaign <id> --client <name> --leads leads.csv ...\n"
+            "  (dry run by default; --apply needs the signed approval file)\n\n"
+            "The wrapper also checks suppression, email status, approval and live membership, and:\n"
             "  1. The cooldown gate - do not re-contact someone you mailed recently.\n"
             "  2. Cross-campaign dedup against your OWN send history. The platform's\n"
             "     own duplicate check is blind to whether anything was ever sent, and\n"
@@ -79,8 +79,8 @@ def main():
             "     showed only about 2% were genuine cooldowns.\n"
             "  3. Outreach logging AT PUSH TIME, so the cooldown works on the next run.\n"
             "     Log it later and queued-but-unsent leads look free to push again.\n\n"
-            f"Emergency one-off: add  {MARKER} <reason>  to the command (logged).\n"
-            "Using that for a production load is a bug in the caller - fix the caller."
+            "A human operator can authorise a one-off; see README, 'Bypass markers'.\n"
+            "Using that for a production load is a bug in the caller. Fix the caller."
         )
 
     H.allow()

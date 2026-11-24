@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import hookinput as H  # noqa: E402
 
 MARKER = "CACHE_OK:"
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prompt-cache-bypass.log")
+LOG = H.log_path("prompt-cache-bypass.log")
 # Which endpoints count as a cacheable LLM call. Override LLM_ENDPOINT_RE to add
 # your own provider, or to point the falsifiability test at a fixture host.
 DEFAULT_ENDPOINTS = r"api\.anthropic\.com/v1/messages"
@@ -20,8 +20,7 @@ def main():
     text = H.written_text(payload) + "\n" + H.command(payload)
     if not text.strip() or not ENDPOINT.search(text) or not LOOPY.search(text) or CACHED.search(text):
         H.allow()
-    if H.has_marker(payload, MARKER):
-        H.log(LOG, f"BYPASS tool={H.tool_name(payload)}")
+    if H.bypass(payload, MARKER, LOG):
         H.allow()
     H.block(
         "BLOCKED: a loop of LLM calls with no cache_control on the system block.\n\n"
@@ -34,7 +33,7 @@ def main():
         "     silently voids the cache for the whole run.\n\n"
         "Wrap your caller in one function that always sets this, rather than trusting\n"
         "each script to remember.\n\n"
-        f"Bypass: {MARKER} <reason>  (logged)"
+        "A human operator can authorise a one-off; see README, 'Bypass markers'."
     )
 
 

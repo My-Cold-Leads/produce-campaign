@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import hookinput as H  # noqa: E402
 
 MARKER = "CUSTOM_FIELD_OK:"
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "custom-field-bypass.log")
+LOG = H.log_path("custom-field-bypass.log")
 
 SPINTAX = re.compile(r"\{[^{}|]{1,80}\|[^{}]{1,200}\}")
 PLATFORM_VAR = re.compile(r"%(signature|email|first_name|last_name|company_name)%", re.I)
@@ -77,8 +77,7 @@ def main():
     if not findings:
         H.allow()
 
-    if H.has_marker(payload, MARKER):
-        H.log(LOG, f"BYPASS tool={H.tool_name(payload)} findings={len(findings)}")
+    if H.bypass(payload, MARKER, LOG):
         H.allow()
 
     H.block(
@@ -87,7 +86,7 @@ def main():
         + "\n\nThe split is: custom fields hold pre-computed plain text. Everything the\n"
         "platform has to interpret - spintax, signature tokens, greeting rotation -\n"
         "belongs in the sequence template.\n\n"
-        f"Bypass: {MARKER} <reason>  (logged)"
+        "A human operator can authorise a one-off; see README, 'Bypass markers'."
     )
 
 

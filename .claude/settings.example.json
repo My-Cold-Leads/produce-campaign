@@ -1,24 +1,85 @@
 {
-  "_comment": "Merge these into your own .claude/settings.json. If you already have a settings.json, add the entries inside the arrays rather than replacing the file. $CLAUDE_PROJECT_DIR is expanded by Claude Code and is the only form robust to the working directory.",
+  "_comment": "Merge these into your own .claude/settings.json. If you already have a settings.json, add the entries inside the arrays rather than replacing the file. $CLAUDE_PROJECT_DIR is expanded by Claude Code and is the only form robust to the working directory. The hooks see Bash commands, Write/Edit/MultiEdit content and MCP tool calls (matcher mcp__.*). Narrow the MCP matcher to your sending platform's server (for example mcp__yourserver__.*) if the hooks slow other MCP tools down. A tool that no matcher routes here is not checked.",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-push-safe-required.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-deliverability-hardening.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-custom-field-syntax.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-abstention-guard.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-prompt-cache-guard.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-durable-writes.sh", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-push-safe-required.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-deliverability-hardening.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-custom-field-syntax.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-abstention-guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-prompt-cache-guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-durable-writes.sh",
+            "timeout": 10
+          }
         ]
       },
       {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-custom-field-syntax.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-prompt-cache-guard.sh", "timeout": 10 },
-          { "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-durable-writes.sh", "timeout": 10 }
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-custom-field-syntax.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-prompt-cache-guard.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-durable-writes.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-push-safe-required.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-deliverability-hardening.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-custom-field-syntax.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/pretooluse-abstention-guard.sh",
+            "timeout": 10
+          }
         ]
       }
     ]

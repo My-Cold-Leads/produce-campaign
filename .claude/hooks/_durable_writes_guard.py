@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib
 import hookinput as H  # noqa: E402
 
 MARKER = "DURABLE_WRITES_OK:"
-LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "durable-writes-bypass.log")
+LOG = H.log_path("durable-writes-bypass.log")
 
 # Endpoints that bill per call. Extend for your own vendors.
 SPEND = re.compile(
@@ -33,8 +33,7 @@ def main():
     if not all(m.start() > last_append for m in PERSIST.finditer(text)):
         H.allow()
 
-    if H.has_marker(payload, MARKER):
-        H.log(LOG, f"BYPASS tool={H.tool_name(payload)}")
+    if H.bypass(payload, MARKER, LOG):
         H.allow()
 
     H.block(
@@ -49,7 +48,7 @@ def main():
         "  - report attempted / succeeded / failed with the failing identifiers\n"
         "  - read the error body; a bare '409: Conflict' with the response discarded is\n"
         "    undiagnosable an hour later\n\n"
-        f"Bypass: {MARKER} <reason>  (logged)"
+        "A human operator can authorise a one-off; see README, 'Bypass markers'."
     )
 
 
