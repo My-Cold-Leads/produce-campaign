@@ -13,6 +13,7 @@ HOOKS = os.path.dirname(os.path.abspath(__file__))
 STATE = os.environ.get("CAMPAIGN_STATE_DIR") or os.path.join(HOOKS, "..", "campaign-state")
 LOG = H.log_path("hardening-bypass.log")
 MAX_AGE_MIN = int(os.environ.get("HARDENING_MAX_AGE_MIN", "120"))
+CAPACITY_MAX_AGE_MIN = int(os.environ.get("CAPACITY_MAX_AGE_MIN", "1440"))
 REQUIRED_CHECKS = ("open_tracking_off", "click_tracking_off", "plain_text_on")
 
 # Actions that put mail on the wire: starting a campaign, or loading leads into one
@@ -35,6 +36,38 @@ def sends(hay):
         return True
     # Pausing or stopping is the safety action and never needs a proof.
     return bool(STATUS_TOUCH.search(hay)) and not STATUS_HALT.search(hay)
+
+
+def starts(hay):
+    """True for a go-live (status START), as opposed to a lead load."""
+    if STATUS_START.search(hay):
+        return True
+    return bool(STATUS_TOUCH.search(hay)) and not STATUS_HALT.search(hay)
+
+
+def capacity_problem(campaign_id):
+    """Why this campaign has no usable sending-capacity proof, or None. Written by
+    scripts/capacity-check.py; one campaign per proof, and it goes stale."""
+    path = os.path.join(STATE, "capacity-%s.ok" % campaign_id)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except OSError:
+        return "capacity: no capacity proof for this campaign"
+    except ValueError:
+        return "capacity: the proof file is not the JSON written by scripts/capacity-check.py"
+    if not isinstance(doc, dict) or str(doc.get("campaign_id")) != str(campaign_id):
+        return "capacity: the proof names a different campaign"
+    if doc.get("passed") is not True:
+        return "capacity: the proof does not show a pass"
+    try:
+        when = datetime.datetime.fromisoformat(str(doc.get("verified_at")).replace("Z", "+00:00"))
+        age = (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return "capacity: the proof has no verified_at time"
+    if age > CAPACITY_MAX_AGE_MIN or age < -5:
+        return "capacity: the proof is older than %d minutes" % CAPACITY_MAX_AGE_MIN
+    return None
 
 
 def campaign_ids(payload, hay):
@@ -98,9 +131,22 @@ def main():
             "Write the id literally (for example --campaign 12345, not a shell variable)."
         )
     problems = [(cid, proof_problem(cid)) for cid in ids]
+    if starts(hay):
+        # Going live also needs the sending-capacity check. Loading leads into a draft does not.
+        problems += [(cid, capacity_problem(cid)) for cid in ids]
     problems = [(cid, why) for cid, why in problems if why]
     if not problems:
         H.allow()
+    if all(why.startswith("capacity:") for _, why in problems):
+        H.block(
+            "BLOCKED: about to put a campaign live with no sending-capacity proof for:\n"
+            + "".join("  campaign %s: %s\n" % (cid, why) for cid, why in problems)
+            + "\nA run is not closed, and a campaign is not started, until the capacity check passes:\n"
+            "    python3 scripts/capacity-check.py --campaign <campaign_id> --leads <n> --steps <n> \\\n"
+            "        --mailboxes <n> --per-mailbox-per-day <n> --sending-days <n>\n"
+            "Read the lead count, the steps and the mailbox limits back from the platform first.\n"
+            f"The proof goes stale after {CAPACITY_MAX_AGE_MIN} minutes."
+        )
 
     H.block(
         "BLOCKED: about to send, with no fresh hardening proof for:\n"

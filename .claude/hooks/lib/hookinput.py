@@ -14,7 +14,11 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import statements as S  # noqa: E402
+
 MIN_REASON_CHARS = 10
+CAMPAIGN_KEYS = ("campaign_id", "campaignId", "campaign")
 
 
 def block(message):
@@ -86,30 +90,74 @@ def mcp_text(payload):
     return tool_name(payload) + "\n" + json.dumps(tool_input(payload), ensure_ascii=False)
 
 
+def active_command(payload):
+    """The parts of a Bash command that can act. Read-only statements (grep, cat, sed -n,
+    git show, bash -n ...) and heredoc bodies that are only written to a file are left out, so
+    a gate never blocks someone for reading. See lib/statements.py."""
+    return S.active_text(command(payload))
+
+
+def command_segments(payload):
+    return S.segments(command(payload))
+
+
 def haystack(payload):
-    """Command + written content + MCP call. Most gates scan all three."""
-    return command(payload) + "\n" + written_text(payload) + "\n" + mcp_text(payload)
+    """Acting command statements + written content + MCP call. Most gates scan all three."""
+    return active_command(payload) + "\n" + written_text(payload) + "\n" + mcp_text(payload)
+
+
+def mcp_campaign(payload):
+    ti = tool_input(payload)
+    for key in CAMPAIGN_KEYS:
+        value = ti.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def marker_reason(payload, marker):
+    """The reason carried by a REAL bypass marker, or None when there is no real marker.
+
+    Bash        a trailing shell comment on the last line:   <command>  # MARKER: reason
+                (the marker inside a quoted string, an echo, or a heredoc is not a marker)
+    Write/Edit  a comment line of its own in the written text:  # MARKER: reason
+    MCP         an input field named after the marker in lower case (PUSH_SAFE_OK: -> push_safe_ok)
+                whose value is "campaign=<id>; reason", where <id> is the campaign the call names
+    """
+    if is_mcp(payload):
+        value = tool_input(payload).get(marker.rstrip(":").lower())
+        if not isinstance(value, str):
+            return None
+        m = re.match(r"\s*campaign=([A-Za-z0-9_-]+)\s*;\s*(.*)$", value, re.S)
+        if not m or not mcp_campaign(payload) or m.group(1) != mcp_campaign(payload):
+            return ""
+        return m.group(2).strip()
+    if command(payload):
+        comment = S.trailing_comment(command(payload))
+        return comment[len(marker):].strip() if comment.startswith(marker) else None
+    m = re.search(r"(?m)^[ \t]*(?:#|//|--)[ \t]*" + re.escape(marker) + r"[ \t]*([^\n]*)$", written_text(payload))
+    return m.group(1).strip() if m else None
 
 
 def bypass(payload, marker, logfile, detail=""):
-    """True when an operator bypass marker with a written reason is present.
+    """True when a real operator bypass marker with a written reason is present.
 
     A marker is an audit trail, not a control: whoever can type the command can type the
-    marker. So it must carry a reason, the reason is logged with the tool and time, and
-    setting CAMPAIGN_HOOKS_NO_BYPASS=1 switches every marker off.
+    marker. So it must be a real marker (see marker_reason), it must carry a reason, the reason
+    is logged with the tool and time, and CAMPAIGN_HOOKS_NO_BYPASS=1 switches every marker off.
     """
-    hay = haystack(payload)
-    if marker not in hay:
+    reason = marker_reason(payload, marker)
+    if reason is None:
         return False
     if os.environ.get("CAMPAIGN_HOOKS_NO_BYPASS") == "1":
         block("BLOCKED: bypass markers are switched off here (CAMPAIGN_HOOKS_NO_BYPASS=1). "
               "Fix the cause instead.")
-    found = re.search(re.escape(marker) + r"[ \t]*([^\n\"']*)", hay)
-    reason = (found.group(1) if found else "").strip()
     if len(reason) < MIN_REASON_CHARS:
-        block("BLOCKED: bypass marker %s needs a reason on the same line (at least %d characters) "
-              "saying why and who approved it. The reason is written to the audit log."
-              % (marker, MIN_REASON_CHARS))
+        block("BLOCKED: bypass marker %s needs a reason (at least %d characters) saying why and who\n"
+              "approved it. In a shell command it must be a trailing comment on the last line\n"
+              "(# %s reason). In an MCP call it is the input field %s = \"campaign=<id>; reason\"\n"
+              "and the id must be the campaign the call names. The reason goes to the audit log."
+              % (marker, MIN_REASON_CHARS, marker, marker.rstrip(":").lower()))
     log(logfile, "BYPASS marker=%s tool=%s %s reason=%s" % (marker, tool_name(payload), detail, reason[:300]))
     return True
 
