@@ -104,6 +104,8 @@ def fake_urlopen(req, timeout=None):
         if email == "failing@example.com":
             raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, io.BytesIO(b""))
         return FakeResp(PLATFORM["leads"].get(email, {}))
+    if path.endswith("/sequences"):
+        return FakeResp(PLATFORM["sequences"].get(path.split("/")[2], []))
     cid = path.rsplit("/", 1)[-1]
     if cid not in PLATFORM["campaigns"]:
         raise urllib.error.HTTPError(req.full_url, 404, "nope", {}, io.BytesIO(b""))
@@ -186,7 +188,30 @@ check("RED: a client name with no history in the log is refused", rc == 2 and "n
 print("--apply refusals (fake platform, nothing may be POSTed):")
 urllib.request.urlopen = fake_urlopen
 os.environ["SMARTLEAD_API_KEY"] = "test-key-not-real"
-APPLY = BASE + ["--batch-size", "4", "--delay", "0", "--live-pace", "0", "--state-dir", J("state"), "--apply"]
+E1 = "<div>{Hola|Buenas} {{first_name}},</div><div>{{observation}}</div>"
+PLATFORM["sequences"] = {"1": [{"id": 11, "seq_number": 1, "email_body": E1}], "2": []}
+PLATFORM["campaigns"]["2"] = {"id": 2, "name": "ACME E2", "client_id": 77, "status": "DRAFTED"}
+PLATFORM["campaigns"]["3"] = {"id": 3, "name": "ACME live", "client_id": 77, "status": "ACTIVE"}
+PLATFORM["sequences"]["3"] = PLATFORM["sequences"]["1"]
+cc = ps.sibling("check-copy-variation")
+ra = ps.sibling("run-approvals")
+LIVE_FP = cc.template_fingerprint(cc.live_sequence_templates(PLATFORM["sequences"]["1"]))
+
+
+def receipt(name, **changes):
+    doc = {"passed": True, "campaign": "1", "template_fingerprint": LIVE_FP, "leads_sha256": ps.sha_file(J("leads.json"))}
+    doc.update(changes)
+    json.dump(doc, open(J(name), "w"))
+    return J(name)
+
+
+receipt("receipt.json")
+APPLY_BARE = BASE + ["--batch-size", "4", "--delay", "0", "--live-pace", "0", "--state-dir", J("state"), "--apply"]
+APPLY = APPLY_BARE + ["--platform-client-id", "77", "--copy-receipt", J("receipt.json")]
+
+
+def swap(args, old, new):
+    return [new if a == old else a for a in args]
 rc, text = run(*APPLY)
 check("RED: --apply without an approval file is refused", rc == 99)
 rc, text = run(*APPLY, "--approval", J("approval.json"))
@@ -203,7 +228,10 @@ check("RED: an approval for another client is refused", rc == 2 and "approval is
 edited = [dict(l) for l in LEADS]
 edited[0] = dict(edited[0], custom_fields={"observation": "texto cambiado después de aprobar"})
 json.dump(edited, open(J("leads-edited.json"), "w"))
-rc, text = run(*[J("leads-edited.json") if a == J("leads.json") else a for a in APPLY], "--approval", J("approval.json"))
+json.dump({"passed": True, "campaign": "1", "template_fingerprint": LIVE_FP, "leads_sha256": ps.sha_file(J("leads-edited.json"))},
+          open(J("receipt-edited.json"), "w"))
+rc, text = run(*swap(swap(APPLY, J("leads.json"), J("leads-edited.json")), J("receipt.json"), J("receipt-edited.json")),
+               "--approval", J("approval.json"))
 check("RED: a lead edited after approval stops the push", rc == 2 and "new or edited since approval" in text)
 open(J("tpl.html"), "w").write("<div>Hola {{first_name}},</div>")
 rc, text = run(*APPLY, "--approval", J("approval.json"), "--template", J("tpl.html"))
@@ -214,6 +242,78 @@ rc, text = run(*["BETA" if a == "ACME" else a for a in APPLY], "--approval", J("
 check("RED: campaign belongs to another client", rc == 2 and "does not contain the client" in text)
 rc, text = run(*["999" if a == "1" else a for a in APPLY], "--approval", J("approval.json"))
 check("RED: a campaign the API key cannot read is refused", rc == 2 and "campaign/client match failed" in text)
+
+print("client binding, copy receipt, zero sequences (still nothing may be POSTed):")
+OKAY = ["--approval", J("approval.json")]
+rc, text = run(*APPLY_BARE, *OKAY, "--copy-receipt", J("receipt.json"))
+check("RED: --apply without --platform-client-id is refused", rc == 99)
+rc, text = run(*swap(APPLY, "77", "88"), *OKAY)
+check("RED: a campaign that belongs to another platform client is refused", rc == 2 and "belongs to platform client 77" in text)
+rc, text = run(*swap(APPLY, "77", "0"), *OKAY)
+check("RED: a client's campaign pushed as if it were your own account is refused", rc == 2 and "campaign/client match failed" in text)
+check("own account: no client id on the platform and 0 expected match", ps.client_binding_problem(None, "0") is None
+      and ps.client_binding_problem(0, "own") is None and ps.client_binding_problem("77", 77) is None)
+check("RED: own-account campaign against a client id does not match", ps.client_binding_problem(None, "77") is not None)
+rc, text = run(*APPLY_BARE, *OKAY, "--platform-client-id", "77")
+check("RED: --apply without a copy receipt is refused", rc == 99)
+for label, changes, needle in (
+        ("a receipt that is not a PASS", {"passed": False}, "not a PASS"),
+        ("a receipt for another campaign", {"campaign": "50"}, "is for campaign"),
+        ("a receipt whose copy is no longer the live copy", {"template_fingerprint": "0" * 64}, "not the copy the receipt measured"),
+        ("a receipt made for a different leads file", {"leads_sha256": "0" * 64}, "different leads file"),
+        ("a receipt not tied to any leads file", {"leads_sha256": None}, "not tied to a leads file")):
+    rc, text = run(*swap(APPLY, J("receipt.json"), receipt("receipt-bad.json", **changes)), *OKAY)
+    check("RED: %s stops the push" % label, rc == 2 and needle in text)
+open(J("receipt-empty.json"), "w").write("")
+rc, text = run(*swap(APPLY, J("receipt.json"), J("receipt-empty.json")), *OKAY)
+check("RED: an empty receipt file stops the push", rc == 2 and "copy receipt unreadable" in text)
+json.dump(dict(doc, campaign_id="2"), open(J("approval-2.json"), "w"))
+rc, text = run(*swap(swap(APPLY, "1", "2"), J("receipt.json"), receipt("receipt-2.json", campaign="2")),
+               "--approval", J("approval-2.json"), "--campaign-name", "ACME E2")
+check("RED: a campaign with zero sequences never passes", rc == 2 and "zero sequences" in text)
+
+print("the recorded copy sign-off as the wrapper's approval (still nothing may be POSTed):")
+
+
+def signoff(run_key, campaign_ids=("1",), fingerprint=LIVE_FP, leads=None, account="77", hours=24):
+    now = dt.datetime.now(dt.timezone.utc)
+    record = {"run": run_key, "client": "ACME", "pending": None, "bundle": None, "digest": [], "decisions": [{
+        "kind": "copy_signoff_draft_push", "key": "draft_push", "verdict": "approved", "campaign_ids": list(campaign_ids),
+        "copy_fingerprint": fingerprint, "leads_sha256": ps.sha_file(leads or J("leads.json")), "account": account,
+        "decided_at": now.isoformat(), "expires_at": (now + dt.timedelta(hours=hours)).isoformat()}]}
+    ra.save_record(record, J("approvals"))
+    return ["--signoff-run", run_key, "--approvals-dir", J("approvals")]
+
+
+for label, kwargs, needle in (
+        ("a sign-off that names other campaigns", {"campaign_ids": ("50", "51")}, "not one of the campaigns named"),
+        ("a sign-off for copy that is no longer live", {"fingerprint": "0" * 64}, "fingerprint is not the one"),
+        ("a sign-off for a different leads file", {"leads": J("leads-edited.json")}, "not the file that was signed off"),
+        ("a sign-off for another sending account", {"account": "88"}, "not the account named"),
+        ("an expired sign-off", {"hours": -1}, "expired")):
+    rc, text = run(*APPLY, *signoff("bad-run", **kwargs))
+    check("RED: %s does not cover the push" % label, rc == 2 and needle in text)
+rc, text = run(*APPLY, "--signoff-run", "never-recorded", "--approvals-dir", J("approvals"))
+check("RED: a run with no sign-off recorded does not cover the push", rc == 2 and "no approval is saved" in text)
+rc, text = run(*swap(swap(APPLY, "1", "3"), J("receipt.json"), receipt("receipt-3.json", campaign="3")),
+               *signoff("live-run", campaign_ids=("3",)), "--campaign-name", "ACME live")
+check("RED: a sign-off does not cover a push into an ACTIVE campaign", rc == 2 and "only while it is DRAFTED or PAUSED" in text)
+rc, text = run(*swap(APPLY, "77", "88"), *signoff("good-run"))
+check("RED: a sign-off does not switch off the client binding", rc == 2 and "campaign/client match failed" in text)
+SIGNED = signoff("good-run")
+
+print("eligibility ledger defaults to enforce:")
+open(J("eligible.txt"), "w").write("ANA@example.com\npablo@example.com\n")
+urllib.request.urlopen = no_network
+rc, text = run(*BASE, "--eligible", J("eligible.txt"))
+check("RED: a lead outside the ledger is skipped with no mode given", "not_in_eligibility_ledger" in text and "enforced" in text)
+rc, text = run(*BASE, "--eligible", J("eligible.txt"), "--eligibility-mode", "off")
+check("RED: an unknown mode ('off') still enforces", "not_in_eligibility_ledger" in text)
+rc, text = run(*BASE, "--eligible", J("eligible.txt"), "--eligibility-mode", "WARN")
+check("only an explicit warn downgrades, and it says so loudly", "not_in_eligibility_ledger" not in text and "WARN MODE" in text)
+check("mode resolution: nothing, garbage and 'enforce' enforce; only 'warn' warns",
+      [ps.resolve_eligibility_mode(x) for x in (None, "", "off", "false", "enforce", " Warn ")] == ["enforce"] * 5 + ["warn"])
+urllib.request.urlopen = fake_urlopen
 check("none of the refusals POSTed anything or touched the log", posts == [] and len(json.load(open(J("log.json")))) == 4)
 
 print("--apply, approved:")
@@ -234,6 +334,10 @@ check("one state line per batch, and the skipped list is saved",
       len(state_files) == 2 and len(open(J("state/" + state_files[0])).read().splitlines()) == 2)
 rc, text = run(*BASE, "--live-check", "--live-pace", "0")
 check("a second run skips everyone just pushed", "ready to push: 0" in text)
+before = len(posts)
+rc, text = run(*APPLY, *SIGNED)
+check("the recorded copy sign-off is accepted as the wrapper's approval, through every other gate",
+      "copy sign-off: OK" in text and "copy receipt: OK" in text and "client binding: OK" in text and len(posts) == before)
 
 print("merge fields and gate logic used in database mode:")
 json.dump([{"email": "a@example.com", "email_status": V, "first_name": "A", "observation": "dato"},

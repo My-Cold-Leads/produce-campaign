@@ -314,6 +314,87 @@ class Facts:
         self.ok_statuses = set(DEFAULT_OK_STATUSES)
         self.freemail = None           # set of domains when the personal-email rule is on
         self.template_vars = ()
+        self.eligible = None           # set of emails from the eligibility ledger, or None = no ledger given
+        self.eligibility_mode = "enforce"
+        self.eligibility_warned = []
+
+
+def resolve_eligibility_mode(raw):
+    """Only an explicit 'warn' downgrades the eligibility filter. Missing, empty, misspelt or
+    unknown all mean enforce: a filter that defaults to off is a filter nobody notices is off."""
+    return "warn" if str(raw or "").strip().lower() == "warn" else "enforce"
+
+
+def read_eligible(path):
+    """Emails that passed the cohort eligibility ledger: one per line, or a JSON list of emails
+    or of objects with an email key."""
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    try:
+        doc = json.loads(text)
+        rows = [r.get("email") if isinstance(r, dict) else r for r in doc] if isinstance(doc, list) else []
+    except ValueError:
+        rows = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    return {str(r).strip().lower() for r in rows if r and str(r).strip()}
+
+
+def client_binding_problem(live_client_id, expected_client_id):
+    """Why the campaign's account on the platform is not the one this push is for, or None.
+    A campaign in your own account reports no client id, or 0; both mean 'own account' and are
+    written as 0. Anything else must match exactly."""
+    def norm(value):
+        if value is None or str(value).strip() in ("", "0", "none", "null", "own"):
+            return "0"
+        return str(value).strip().lower()
+    if norm(live_client_id) != norm(expected_client_id):
+        return ("the campaign belongs to platform client %s, but --platform-client-id says %s. The checks ran for "
+                "one client and the leads would land in another's campaign" % (norm(live_client_id), norm(expected_client_id)))
+    return None
+
+
+def sha_file(path):
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def sibling(name):
+    """Load another script from this directory as a module (their names have dashes)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def copy_receipt_problem(receipt_path, campaign, leads_path, live_template_fp):
+    """Why the copy-variation receipt does not describe THIS push, or None.
+
+    The receipt is the PASS report of scripts/check-copy-variation.py. It must be a pass, for this
+    campaign, for copy that is still the copy on the platform (template fingerprint recomputed
+    from the live sequences by the caller), and for this exact leads file (sha256). A receipt
+    measured on fixture A cannot certify a push of leads B."""
+    try:
+        with open(receipt_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return "copy receipt unreadable: %s" % type(exc).__name__
+    if not isinstance(doc, dict) or doc.get("passed") is not True:
+        return "the copy receipt is not a PASS"
+    if str(doc.get("campaign") or "") != str(campaign):
+        return "the copy receipt is for campaign %r, this push is for %r" % (doc.get("campaign"), str(campaign))
+    if not live_template_fp:
+        return "the live sequences could not be fingerprinted"
+    if doc.get("template_fingerprint") != live_template_fp:
+        return ("the copy on the platform is not the copy the receipt measured (template fingerprint %s on the receipt, %s live). "
+                "Re-run check-copy-variation.py" % (str(doc.get("template_fingerprint"))[:12], live_template_fp[:12]))
+    if not doc.get("leads_sha256"):
+        return "the copy receipt is not tied to a leads file; re-run check-copy-variation.py with --leads-file %s" % leads_path
+    try:
+        if sha_file(leads_path) != doc["leads_sha256"]:
+            return "the copy receipt was made for a different leads file; re-run check-copy-variation.py with --leads-file %s" % leads_path
+    except OSError:
+        return "could not hash the leads file"
+    return None
 
 
 def lead_hash(lead):
@@ -363,6 +444,11 @@ def prepare(rows, facts, cooldown_days):
         if key in facts.recent:
             skipped.append((n, email, "cooldown_%dd" % cooldown_days))
             continue
+        if facts.eligible is not None and key not in facts.eligible:
+            if facts.eligibility_mode != "warn":
+                skipped.append((n, email, "not_in_eligibility_ledger"))
+                continue
+            facts.eligibility_warned.append(email)
         lead["email"] = email
         if facts.template_vars:
             values = dict(lead.get("custom_fields") or {})
@@ -540,6 +626,19 @@ def main(argv=None):
     p.add_argument("--approval", help="signed approval JSON; required with --apply")
     p.add_argument("--write-approval-request", metavar="FILE",
                    help="dry run only: write the unsigned approval for the reviewer to sign")
+    p.add_argument("--signoff-run", metavar="RUN",
+                   help="use the copy sign-off recorded for this run by scripts/run-approvals.py as the approval. "
+                        "It must name this campaign, this sending account, this leads file and the live copy, "
+                        "and the campaign must be DRAFTED or PAUSED")
+    p.add_argument("--approvals-dir", help="where run approval records live (default CAMPAIGN_STATE_DIR or .claude/campaign-state)")
+    p.add_argument("--platform-client-id",
+                   help="the platform client id this campaign must belong to; 0 for your own account. Required with --apply")
+    p.add_argument("--copy-receipt", metavar="FILE",
+                   help="PASS report from scripts/check-copy-variation.py --leads-file <this leads file>. Required with --apply")
+    p.add_argument("--eligible", metavar="FILE",
+                   help="emails that passed your cohort eligibility ledger; a lead not in it is skipped")
+    p.add_argument("--eligibility-mode", default="",
+                   help="'warn' reports ineligible leads without skipping them. Anything else, or nothing, enforces")
     p.add_argument("--first-push-for-client", action="store_true",
                    help="confirm this client really has no outreach history yet")
     p.add_argument("--live-check", action="store_true", help="run the live membership check on a dry run too")
@@ -566,8 +665,16 @@ def main(argv=None):
                 "An empty file is accepted, a missing one is not.")
     if args.apply and args.write_approval_request:
         p.error("--write-approval-request is for the dry run; sign the file, then pass it with --approval")
-    if args.apply and not args.approval:
-        p.error("--apply needs --approval FILE. Create it with a dry run and --write-approval-request.")
+    if args.apply and not (args.approval or args.signoff_run):
+        p.error("--apply needs an approval: --approval FILE (create it with a dry run and --write-approval-request), "
+                "or --signoff-run RUN (the copy sign-off recorded with scripts/run-approvals.py).")
+    if args.apply and args.platform_client_id is None:
+        p.error("--apply needs --platform-client-id: the sending platform's client id this campaign must belong to "
+                "(0 for a campaign in your own account). It is checked against the live campaign.")
+    if args.apply and not args.copy_receipt:
+        p.error("--apply needs --copy-receipt FILE: the PASS report of scripts/check-copy-variation.py, "
+                "made with --leads-file for this leads file.")
+    eligibility_mode = resolve_eligibility_mode(args.eligibility_mode or os.environ.get("CAMPAIGN_ELIGIBILITY_MODE"))
     api_key = os.environ.get("SMARTLEAD_API_KEY", "")
     if args.apply and not api_key:
         p.error("--apply needs SMARTLEAD_API_KEY in the environment")
@@ -607,7 +714,16 @@ def main(argv=None):
         template_sha = hashlib.sha256(template_text.encode("utf-8")).hexdigest()
         facts.template_vars = tuple(sorted(set(MERGE_VAR_RE.findall(template_text))))
 
+    if args.eligible:
+        facts.eligible = read_eligible(args.eligible)
+        facts.eligibility_mode = eligibility_mode
+
     ready, skipped = prepare(rows, facts, args.cooldown_days)
+    if args.eligible and eligibility_mode == "warn":
+        print("!!! ELIGIBILITY FILTER IS IN WARN MODE: %d lead(s) not in the eligibility ledger are NOT being skipped. "
+              "Remove --eligibility-mode warn to enforce." % len(facts.eligibility_warned))
+    elif args.eligible:
+        print("eligibility ledger: enforced (%d eligible email(s) in the ledger)" % len(facts.eligible))
 
     mode = "APPLY" if args.apply else "DRY RUN (nothing sent, nothing logged; add --apply)"
     print("PUSH-SAFE %s - campaign %s, client %s" % (mode, args.campaign, args.client))
@@ -625,6 +741,43 @@ def main(argv=None):
             return refuse("campaign/client match failed: %s. Nothing was pushed." % problem)
         live_campaign = body
         print("campaign match: OK (live name %r)" % str(body.get("name") or ""))
+        if args.platform_client_id is not None:
+            problem = client_binding_problem(body.get("client_id"), args.platform_client_id)
+            if problem:
+                return refuse("campaign/client match failed: %s. Nothing was pushed." % problem)
+            print("client binding: OK (the campaign belongs to the expected platform client)")
+        if args.apply:
+            # The receipt must describe the copy that is on the platform now, and this leads file.
+            ok, sequences = api_get("/campaigns/%s/sequences" % args.campaign, api_key)
+            if not ok or not isinstance(sequences, list):
+                return refuse("could not read the campaign's sequences (%s). Nothing was pushed." % (sequences if not ok else "unexpected response"))
+            if not sequences:
+                return refuse("campaign %s has zero sequences. Leads loaded into it would have nothing to receive, "
+                              "and no copy check can have passed. Nothing was pushed." % args.campaign)
+            try:
+                checker = sibling("check-copy-variation")
+                live_template_fp = checker.template_fingerprint(checker.live_sequence_templates(sequences))
+            except Exception as exc:
+                return refuse("could not fingerprint the live sequences (%s). Nothing was pushed." % type(exc).__name__)
+            problem = copy_receipt_problem(args.copy_receipt, args.campaign, args.leads, live_template_fp)
+            if problem:
+                return refuse("copy receipt check failed: %s. Nothing was pushed." % problem)
+            print("copy receipt: OK (matches the live sequences and this leads file)")
+            if args.signoff_run:
+                # The recorded copy sign-off is read HERE and nowhere else: it is this wrapper's
+                # approval gate. It never releases a raw or MCP push, which skip every gate above.
+                try:
+                    approvals = sibling("run-approvals")
+                    record = approvals.load_record(args.signoff_run, args.approvals_dir)
+                    problem = approvals.copy_signoff_problem(
+                        record, args.campaign, "push", body.get("status"), live_template_fp,
+                        sha_file(args.leads), args.platform_client_id)
+                except Exception as exc:
+                    problem = "the sign-off record could not be read (%s)" % type(exc).__name__
+                if problem:
+                    return refuse("copy sign-off does not cover this push: %s. Nothing was pushed." % problem)
+                print("copy sign-off: OK (run %s; campaign, account, leads file, live copy and DRAFTED/PAUSED status all match)"
+                      % args.signoff_run)
         ready, live_skipped = live_membership(ready, args.campaign, live_campaign, api_key, args.cooldown_days, args.live_pace)
         skipped.extend(live_skipped)
         print("live membership: checked %d, skipped %d" % (len(ready) + len(live_skipped), len(live_skipped)))

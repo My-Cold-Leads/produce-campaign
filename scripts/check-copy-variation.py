@@ -218,6 +218,29 @@ def fingerprint(data):
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def sequence_templates(data):
+    """[[template of each variant], ...] one list per sequence, in order, from normalised data."""
+    out = []
+    for seq in data["sequences"]:
+        variants = [v.get("template") or "" for v in seq.get("variant_templates") or []]
+        out.append(variants or [seq.get("template") or seq.get("body_template") or ""])
+    return out
+
+
+def live_sequence_templates(raw_sequences):
+    """The same shape, straight from the platform's sequences response."""
+    return [[s["template"] or "" for s in expand_variants(seq)] for seq in (raw_sequences or [])]
+
+
+def template_fingerprint(templates):
+    """Fingerprint of the copy as written (every variant of every step, in order), with no lead
+    data. The receipt records it; the push wrapper recomputes it from the live sequences, so a
+    receipt for copy that was edited afterwards stops matching."""
+    canonical = [sorted(t.strip() for t in variants) for variants in templates]
+    payload = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def normalise_rendered(raw, campaign_override=None):
     sequences = raw.get("sequences") if isinstance(raw, dict) else raw
     if not isinstance(sequences, list):
@@ -533,6 +556,11 @@ def main():
     parser.add_argument("--small-cohort-ack")
     parser.add_argument("--allow-fixed-line", action="append", default=[])
     parser.add_argument("--fingerprint-only", action="store_true")
+    parser.add_argument("--template-fingerprint-only", action="store_true",
+                        help="print the fingerprint of the sequence templates alone (what the push wrapper recomputes live)")
+    parser.add_argument("--leads-file",
+                        help="the exact leads file that will be pushed; its sha256 goes into the receipt so the "
+                             "push wrapper can refuse a receipt made for a different file")
 
     parser.add_argument("--copy-field", action="append", default=[],
                         help="custom field that carries copy rather than lead data; measured, not masked")
@@ -571,9 +599,21 @@ def main():
             else:
                 by_id[seq["id"]] = seq
         data["sequences"] = list(by_id.values())
+    if not data["sequences"]:
+        # Nothing was measured, so nothing can pass. A campaign with no sequences sends nothing.
+        print("REFUSED copy variation for campaign %s: zero sequences, nothing was measured. No PASS artifact written."
+              % data["campaign"], file=sys.stderr)
+        sys.exit(2)
     fp = fingerprint(data)
+    template_fp = template_fingerprint(sequence_templates(data))
     if args.fingerprint_only:
         print(fp); return
+    if args.template_fingerprint_only:
+        print(template_fp); return
+    leads_sha = None
+    if args.leads_file:
+        with open(args.leads_file, "rb") as fh:
+            leads_sha = hashlib.sha256(fh.read()).hexdigest()
 
     template_only = set()
     for seq in data["sequences"]:
@@ -637,6 +677,7 @@ def main():
     mode = "template_only" if template_only and len(template_only) == len(results) else \
            ("mixed" if template_only else "rendered")
     report = {"passed": not failures, "mode": mode, "client": args.client, "campaign": data["campaign"], "fingerprint": fp,
+              "template_fingerprint": template_fp, "leads_sha256": leads_sha,
               "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(), "top_up_union": bool(args.top_up),
               "thresholds": {"max_line_share": MAX_LINE_SHARE, "fixed_body_lines": 0, "distinct_body_share": MIN_DISTINCT_SHARE},
               "simulation_caveat": "Template spintax shares are expected values under uniform Smartlead branch selection, not observed sends.",

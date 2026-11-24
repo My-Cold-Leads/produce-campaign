@@ -91,6 +91,32 @@ check copy_field FAIL fixed_body_lines             # undeclared copy field is ma
 check copy_field PASS "" --copy-field intro        # declared: measured, 8 renderings
 check copy_field FAIL "declaration refused" --copy-field company  # lead data cannot be declared copy
 
+# Zero sequences: nothing was measured, so nothing may pass and no PASS receipt may exist.
+echo '{"campaign":"zeroseq","signature":"S","sequences":[]}' > "$TMP/zero.json"
+python3 "$GATE" --rendered "$TMP/zero.json" --client test --out-dir "$TMP" >/dev/null 2>&1; code=$?
+if [ $code -ne 0 ] && [ ! -e "$TMP/copy-variation-PASS-test-zeroseq.json" ]; then
+  echo "  ok   RED: zero sequences exits $code and writes no PASS"; pass=$((pass+1))
+else echo "  FAIL zero sequences exited $code or wrote a PASS"; fail=$((fail+1)); fi
+python3 "$GATE" --rendered "$TMP/zero.json" --fingerprint-only >/dev/null 2>&1; code=$?
+if [ $code -ne 0 ]; then echo "  ok   RED: zero sequences has no fingerprint either"; pass=$((pass+1))
+else echo "  FAIL zero sequences printed a fingerprint"; fail=$((fail+1)); fi
+
+# The receipt is tied to the leads file it was made for, and carries the template fingerprint.
+echo '[{"email":"ana@example.com"}]' > "$TMP/leads-a.json"
+python3 "$GATE" --rendered "$TMP/varied.json" --client hash --small-cohort-ack "test fixture" --out-dir "$TMP" --leads-file "$TMP/leads-a.json" >/dev/null 2>&1
+want=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$TMP/leads-a.json")
+if grep -q "\"leads_sha256\": \"$want\"" "$TMP/copy-variation-PASS-hash-varied.json" 2>/dev/null \
+   && grep -qE '"template_fingerprint": "[0-9a-f]{64}"' "$TMP/copy-variation-PASS-hash-varied.json"; then
+  echo "  ok   the receipt records the leads file hash and the template fingerprint"; pass=$((pass+1))
+else echo "  FAIL the receipt does not record the leads file hash"; fail=$((fail+1)); fi
+python3 "$GATE" --rendered "$TMP/varied.json" --client nohash --small-cohort-ack "test fixture" --out-dir "$TMP" >/dev/null 2>&1
+if grep -q '"leads_sha256": null' "$TMP/copy-variation-PASS-nohash-varied.json" 2>/dev/null; then
+  echo "  ok   RED: a receipt made without --leads-file is tied to no leads file (the wrapper refuses it)"; pass=$((pass+1))
+else echo "  FAIL a receipt made without --leads-file claims a leads hash"; fail=$((fail+1)); fi
+fa=$(python3 "$GATE" --rendered "$TMP/varied.json" --template-fingerprint-only); fb=$(python3 "$GATE" --rendered "$TMP/shared_line.json" --template-fingerprint-only)
+if [ -n "$fa" ] && [ "$fa" != "$fb" ]; then echo "  ok   RED: different copy has a different template fingerprint"; pass=$((pass+1))
+else echo "  FAIL template fingerprint does not change with the copy"; fail=$((fail+1)); fi
+
 if python3 "$GATE" --self-test >/dev/null 2>&1; then echo "  ok   --self-test"; pass=$((pass+1)); else echo "  FAIL --self-test"; fail=$((fail+1)); fi
 
 echo "passed $pass, failed $fail"
