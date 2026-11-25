@@ -149,10 +149,16 @@ json.dump([
     {"client_name": "OTHER", "email": "sara@example.com", "loaded_date": iso(3), "first_sent_date": None},
 ], open(J("log.json"), "w"))
 open(J("suppression.txt"), "w").write("# do not contact\ndnc@example.com\n@blocked.example\n")
-BASE = ["--campaign", "1", "--client", "ACME", "--leads", J("leads.json"),
-        "--outreach-log", J("log.json"), "--suppression", J("suppression.txt")]
+open(J("prior.txt"), "w").write("# people who already replied\nnobody-in-this-set@example.com\n")
+BASE_NOPRIOR = ["--campaign", "1", "--client", "ACME", "--leads", J("leads.json"),
+                "--outreach-log", J("log.json"), "--suppression", J("suppression.txt")]
+BASE = BASE_NOPRIOR + ["--prior-replies", J("prior.txt")]
 DRY_SET = ["ana@example.com", "done@example.com", "failing@example.com", "otherclient@example.com", "pablo@example.com",
            "pepe@gmail.com", "queued@example.com", "recent@example.com", "sara@example.com", "unsub@example.com"]
+
+def swap(args, old, new):
+    return [new if a == old else a for a in args]
+
 
 print("dry run (no network allowed):")
 urllib.request.urlopen = no_network
@@ -185,6 +191,89 @@ check("RED: a shortened cooldown without a reason is refused", rc == 99)
 rc, text = run(*["WRONG" if a == "ACME" else a for a in BASE])
 check("RED: a client name with no history in the log is refused", rc == 2 and "none for client" in text)
 
+print("lead VALUES are scanned; one bad lead refuses the whole push (no network):")
+BAD_VALUES = (
+    ("NOT_FOUND in upper case", {"observation": "NOT_FOUND"}, "NOT_FOUND"),
+    ("not_found in lower case", {"observation": "dato not_found aqui"}, "NOT_FOUND"),
+    ("Not_Found in mixed case", {"first_name": "Not_Found"}, "NOT_FOUND"),
+    ("a {{placeholder}}", {"observation": "Hola {{first_name}}"}, "{{placeholder}}"),
+    ("a [FIRST_NAME] bracket placeholder", {"observation": "Hola [FIRST_NAME]"}, "[BRACKET]"),
+    ("TODO text", {"observation": "TODO escribir esto"}, "TODO/TBD/lorem"),
+    ("TBD text", {"observation": "tbd"}, "TODO/TBD/lorem"),
+    ("lorem ipsum", {"observation": "Lorem ipsum dolor"}, "TODO/TBD/lorem"),
+    ("spintax {a|b}", {"observation": "{Hola|Buenas} equipo"}, "spintax"),
+    ("%signature% syntax", {"observation": "gracias %signature%"}, "%variable%"),
+)
+for label, fields, needle in BAD_VALUES:
+    bad = [{"email": "ok@example.com", "email_status": V, "first_name": "Ok", "observation": "abrió una tienda"},
+           dict({"email": "bad@example.com", "email_status": V, "first_name": "Bad", "observation": "dato"}, **fields)]
+    json.dump(bad, open(J("leads-bad.json"), "w"))
+    rc, text = run(*swap(BASE, J("leads.json"), J("leads-bad.json")))
+    check("RED: %s in a lead value refuses the push, naming the lead" % label,
+          rc == 2 and needle in text and "row 2 bad@example.com" in text and "row 1 " not in text)
+json.dump([{"email": "ok@example.com", "email_status": V, "first_name": "Ok", "observation": ""},
+           {"email": "ok2@example.com", "email_status": V, "first_name": "María", "observation": "ganó 50% más, 20% menos [sic] y 100% real"}],
+          open(J("leads-clean.json"), "w"))
+rc, text = run(*swap(BASE, J("leads.json"), J("leads-clean.json")))
+check("a clean lead (and an empty value) passes the value scan", rc == 0 and "ready to push: 2" in text)
+
+print("prior-reply gate fails closed (no network):")
+rc, text = run(*BASE_NOPRIOR)
+check("RED: file mode with no prior-reply source is refused", rc == 2 and "no prior-reply data source" in text and "fails closed" in text)
+rc, text = run(*BASE_NOPRIOR, "--no-prior-reply-source", "")
+check("RED: the opt-out without a reason is refused", rc == 99)
+rc, text = run(*BASE_NOPRIOR, "--no-prior-reply-source", "brand new client, no replies exist yet")
+check("GREEN: the documented opt-out runs, and says so loudly with the reason",
+      rc == 0 and "PRIOR-REPLY GATE OPT-OUT: brand new client, no replies exist yet" in text and "ready to push: 10" in text)
+open(J("prior-real.txt"), "w").write("pablo@example.com,wrong_person\nANA@example.com\nsara@example.com,not_interested_yet\n")
+rc, text = run(*BASE_NOPRIOR, "--prior-replies", J("prior-real.txt"), "--plan-out", J("plan-prior.json"))
+sent2 = sorted(l["email"] for b in json.load(open(J("plan-prior.json"))) for l in b["lead_list"])
+check("RED: a person in the prior-reply file is skipped, with the category as the reason",
+      "prior_reply_wrong_person: 1" in text and "prior_reply_replied: 1" in text and "pablo@example.com" not in sent2 and "ana@example.com" not in sent2)
+check("a non-permanent category in the file blocks nobody", "sara@example.com" in sent2 and "prior-reply gate: ON" in text)
+
+
+class FakeDb:
+    """Stands in for DbLog so database mode runs with no driver and no network."""
+    mode = "database"
+    has_data = False
+
+    def __init__(self, url):
+        pass
+
+    def client_known(self, client):
+        return False, False
+
+    def recent(self, client, emails, days):
+        return set()
+
+    def contact_state(self, client, emails):
+        return {e: ("valid", False) for e in emails}
+
+    def dnc_domains(self, client, domains):
+        return set()
+
+    def prior_outcomes(self, client, emails):
+        return {"pablo@example.com": "interested"} if self.has_data else {}
+
+    def has_reply_data(self, client):
+        return self.has_data
+
+
+real_db = getattr(ps, "DbLog", None)
+ps.DbLog = FakeDb
+DBARGS = ["--campaign", "1", "--client", "ACME", "--leads", J("leads.json"), "--database-url", "postgres://example.invalid/x"]
+FakeDb.has_data = False
+rc, text = run(*DBARGS)
+check("RED: database mode with an empty campaign_responses table is refused", rc == 2 and "fails closed" in text)
+rc, text = run(*DBARGS, "--no-prior-reply-source", "sync job not built yet")
+check("GREEN: database mode with an empty table runs only with the logged opt-out", rc == 0 and "OPT-OUT" in text)
+FakeDb.has_data = True
+rc, text = run(*DBARGS)
+check("GREEN: database mode with reply data runs, and the gate catches the prior reply",
+      rc == 0 and "prior_reply_interested: 1" in text and "campaign_responses table" in text)
+ps.DbLog = real_db
+
 print("--apply refusals (fake platform, nothing may be POSTed):")
 urllib.request.urlopen = fake_urlopen
 os.environ["SMARTLEAD_API_KEY"] = "test-key-not-real"
@@ -210,8 +299,6 @@ APPLY_BARE = BASE + ["--batch-size", "4", "--delay", "0", "--live-pace", "0", "-
 APPLY = APPLY_BARE + ["--platform-client-id", "77", "--copy-receipt", J("receipt.json")]
 
 
-def swap(args, old, new):
-    return [new if a == old else a for a in args]
 rc, text = run(*APPLY)
 check("RED: --apply without an approval file is refused", rc == 99)
 rc, text = run(*APPLY, "--approval", J("approval.json"))
@@ -338,6 +425,13 @@ before = len(posts)
 rc, text = run(*APPLY, *SIGNED)
 check("the recorded copy sign-off is accepted as the wrapper's approval, through every other gate",
       "copy sign-off: OK" in text and "copy receipt: OK" in text and "client binding: OK" in text and len(posts) == before)
+
+rc, text = run(*[a for a in APPLY if a not in ("--prior-replies", J("prior.txt"))],
+               "--no-prior-reply-source", "audit test reason", "--approval", J("approval.json"), "--state-dir", J("state-optout"))
+optout_file = J("state-optout/prior-reply-optout.jsonl")
+rec = json.loads(open(optout_file).read().splitlines()[0]) if os.path.exists(optout_file) else {}
+check("the opt-out is written to the state dir on --apply, with its reason",
+      rec.get("reason") == "audit test reason" and rec.get("campaign") == "1" and rec.get("client") == "ACME")
 
 print("merge fields and gate logic used in database mode:")
 json.dump([{"email": "a@example.com", "email_status": V, "first_name": "A", "observation": "dato"},

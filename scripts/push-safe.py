@@ -13,12 +13,18 @@ Gates, in order. Every skipped lead is printed with its reason:
   4. Email status: only verified statuses pass (valid, verified, deliverable_catchall by default;
      change with --allow-status). Database mode reads contacts.email_status and skips anyone
      with no contacts row. File mode reads the email_status column of the lead file.
-  5. Prior reply outcome (database mode): anyone who already answered interested, booked a
+  5. Prior reply outcome (database mode reads campaign_responses; file mode reads --prior-replies FILE):
+     FAILS CLOSED. With no data source (no --prior-replies, and no campaign_responses rows for this
+     client) the push is refused, because an empty source passes everyone. The only way past is
+     --no-prior-reply-source "REASON", which prints a loud warning and saves the reason to the state dir.
+     Anyone who already answered interested, booked a
      meeting, asked for information, unsubscribed, or said wrong person / left the company is never
      cold-emailed again for this client, however old the reply.
   6. Cooldown: anyone in your outreach log for this client whose
      COALESCE(first_sent_date, loaded_date) is inside the window (90 days by default) is skipped.
      A queued-but-unsent lead counts as contacted.
+     Before any gate: a lead whose values hold NOT_FOUND, {{placeholders}}, [BRACKET] placeholders,
+     TODO/TBD/lorem, spintax {a|b} or %variable% syntax refuses the WHOLE push (exit 2), dry run included.
   7. Merge fields, when --template FILE is given: a lead missing any {{variable}} the template
      uses is skipped, because an empty field renders as a blank.
   8. Approval fingerprint (required with --apply): --approval FILE must name this campaign and
@@ -87,6 +93,15 @@ STANDARD_FIELDS = ("email", "first_name", "last_name", "company_name", "phone_nu
 LOG_ONLY_FIELDS = ("contact_id", "email_status")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MERGE_VAR_RE = re.compile(r"\{\{\s*([A-Za-z0-9_]+)\s*\}\}")
+# Lead VALUES that must never reach a recipient. Each entry: (reason, compiled pattern).
+BAD_VALUE_PATTERNS = (
+    ("abstention token NOT_FOUND", re.compile(r"not[_\-]?found", re.I)),
+    ("unresolved {{placeholder}}", re.compile(r"\{\{.*?\}\}", re.S)),
+    ("unresolved [BRACKET] placeholder", re.compile(r"\[\s*(?:[A-Z][A-Z0-9_ ]*|[A-Za-z0-9]+_[A-Za-z0-9_]+)\s*\]")),
+    ("TODO/TBD/lorem filler text", re.compile(r"\b(?:todo|tbd|fixme|lorem)\b", re.I)),
+    ("spintax {a|b}", re.compile(r"\{[^{}]*\|[^{}]*\}")),
+    ("platform syntax %variable%", re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%")),
+)
 REJECTION_KEYS = ("block_count", "duplicate_count", "invalid_email_count", "already_added_to_campaign",
                   "bounce_count", "lead_import_stopped_count")
 # Common personal mailbox providers. Extend per market with --freemail-domains FILE.
@@ -283,6 +298,11 @@ class DbLog:
             "WHERE client_name = %s AND LOWER(lead_email) = ANY(%s) AND reply_category = ANY(%s)",
             (client, list(emails), list(PERMANENT_OUTCOMES)))}
 
+    def has_reply_data(self, client):
+        """True when campaign_responses holds at least one row for this client. An empty table means
+        the sync job is not running, and an empty table must never read as 'nobody ever replied'."""
+        return bool(self._rows("SELECT 1 FROM campaign_responses WHERE client_name = %s LIMIT 1", (client,)))
+
     def write(self, rows):
         """One INSERT per row, each on its own, so one bad row costs one row."""
         written, failures = 0, []
@@ -323,6 +343,37 @@ def resolve_eligibility_mode(raw):
     """Only an explicit 'warn' downgrades the eligibility filter. Missing, empty, misspelt or
     unknown all mean enforce: a filter that defaults to off is a filter nobody notices is off."""
     return "warn" if str(raw or "").strip().lower() == "warn" else "enforce"
+
+
+def read_prior_replies(path):
+    """Prior-reply source for file mode: {email: category}. Accepts one email per line (optionally
+    'email,category'), or a JSON list of emails or of objects with email and reply_category. A bare
+    email counts as 'replied'. A category that is not a permanent outcome is ignored, so a
+    'not interested yet' row never blocks anyone for good."""
+    found = {}
+    with open(path, encoding="utf-8-sig") as fh:
+        text = fh.read()
+    items = []
+    if text.lstrip().startswith(("[", "{")):
+        data = json.loads(text)
+        if isinstance(data, dict):
+            data = data.get("replies") or data.get("leads") or []
+        for item in data:
+            if isinstance(item, str):
+                items.append((item, "replied"))
+            elif isinstance(item, dict):
+                items.append((item.get("email") or item.get("lead_email") or "", item.get("reply_category") or "replied"))
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                email, _, category = line.partition(",")
+                items.append((email, category.strip() or "replied"))
+    for email, category in items:
+        email, category = str(email).strip().lower(), str(category).strip().lower()
+        if email and (category == "replied" or category in PERMANENT_OUTCOMES):
+            found[email] = category
+    return found
 
 
 def read_eligible(path):
@@ -395,6 +446,24 @@ def copy_receipt_problem(receipt_path, campaign, leads_path, live_template_fp):
     except OSError:
         return "could not hash the leads file"
     return None
+
+
+def lead_value_problems(rows):
+    """Scan every value that would be sent (standard fields and custom fields). Returns
+    [(row_no, email, field, reason)]. Empty values are not flagged here: the merge-field gate owns them."""
+    problems = []
+    for n, row in enumerate(rows, start=1):
+        lead, _ = to_lead(row)
+        values = {k: v for k, v in lead.items() if k != "custom_fields"}
+        values.update(lead.get("custom_fields") or {})
+        for field, value in sorted(values.items()):
+            text = "" if value is None else str(value)
+            if not text.strip():
+                continue
+            for reason, pattern in BAD_VALUE_PATTERNS:
+                if pattern.search(text):
+                    problems.append((n, str(lead.get("email") or ""), field, reason))
+    return problems
 
 
 def lead_hash(lead):
@@ -635,6 +704,12 @@ def main(argv=None):
                    help="the platform client id this campaign must belong to; 0 for your own account. Required with --apply")
     p.add_argument("--copy-receipt", metavar="FILE",
                    help="PASS report from scripts/check-copy-variation.py --leads-file <this leads file>. Required with --apply")
+    p.add_argument("--prior-replies", metavar="FILE",
+                   help="file mode prior-reply source: emails (one per line, or JSON) of people who already replied. "
+                        "Database mode reads campaign_responses instead")
+    p.add_argument("--no-prior-reply-source", metavar="REASON", default=None,
+                   help="OPT-OUT. Run with no prior-reply data at all. Without a source the gate fails closed and refuses. "
+                        "The reason is printed on every run and saved to the state dir (prior-reply-optout.jsonl) on --apply")
     p.add_argument("--eligible", metavar="FILE",
                    help="emails that passed your cohort eligibility ledger; a lead not in it is skipped")
     p.add_argument("--eligibility-mode", default="",
@@ -689,6 +764,28 @@ def main(argv=None):
                       "switches the cooldown off without any error. Fix --client, or pass "
                       "--first-push-for-client if this client is new." % args.client)
 
+    bad_values = lead_value_problems(rows)
+    if bad_values:
+        lines = ["row %d %s: field %r holds %s" % (n, email or "<no email>", field, reason)
+                 for n, email, field, reason in bad_values[:50]]
+        more = "\n  ... and %d more" % (len(bad_values) - 50) if len(bad_values) > 50 else ""
+        return refuse("%d lead value(s) are not safe to send. Fix the leads file; nothing was pushed.\n  %s%s"
+                      % (len(bad_values), "\n  ".join(lines), more))
+
+    optout = (args.no_prior_reply_source or "").strip()
+    if args.no_prior_reply_source is not None and not optout:
+        p.error("--no-prior-reply-source needs a reason; it is printed and saved with the run")
+    prior_source = None
+    if args.prior_replies:
+        prior_source = "file %s" % args.prior_replies
+    elif log.mode == "database" and log.has_reply_data(args.client):
+        prior_source = "campaign_responses table"
+    if prior_source is None and not optout:
+        return refuse("no prior-reply data source is configured, so the prior-reply gate cannot tell who already "
+                      "answered. It fails closed. Give --prior-replies FILE (file mode), or fill campaign_responses "
+                      "for client %r (database mode, normally by your sync job), or pass --no-prior-reply-source "
+                      "\"REASON\" to run without it; the opt-out is logged. Nothing was pushed." % args.client)
+
     facts = Facts()
     if args.allow_status:
         facts.ok_statuses = {x.strip().lower() for x in args.allow_status if x.strip()}
@@ -702,6 +799,8 @@ def main(argv=None):
         all_domains = {d for e in emails if "@" in e for d in domain_and_parents(domain_of(e))}
         facts.dnc_domains |= log.dnc_domains(args.client, all_domains)
         facts.outcomes = log.prior_outcomes(args.client, emails)
+    if args.prior_replies:
+        facts.outcomes.update({e: c for e, c in read_prior_replies(args.prior_replies).items() if e in emails})
     if args.exclude_personal_emails:
         facts.freemail = set(FREEMAIL_DOMAINS)
         if args.freemail_domains:
@@ -728,6 +827,11 @@ def main(argv=None):
     mode = "APPLY" if args.apply else "DRY RUN (nothing sent, nothing logged; add --apply)"
     print("PUSH-SAFE %s - campaign %s, client %s" % (mode, args.campaign, args.client))
     print("attempted: %d rows" % len(rows))
+    if prior_source:
+        print("prior-reply gate: ON (source: %s)" % prior_source)
+    if optout:
+        print("!!! PRIOR-REPLY GATE OPT-OUT: %s. %s" % (optout, "Running WITHOUT prior-reply data." if prior_source is None
+                                                       else "A source was also present and is still applied."))
     print("allowed email statuses: %s" % ", ".join(sorted(facts.ok_statuses)))
     if args.cooldown_days < DEFAULT_COOLDOWN_DAYS:
         print("cooldown shortened to %d days. Reason given: %s" % (args.cooldown_days, args.cooldown_reason.strip()))
@@ -826,8 +930,13 @@ def main(argv=None):
     stamp_name = "%s-%s" % (re.sub(r"[^A-Za-z0-9_-]", "_", args.campaign), now_utc().strftime("%Y%m%dT%H%M%SZ"))
     state_path = os.path.join(args.state_dir, "push-%s.jsonl" % stamp_name)
     with open(os.path.join(args.state_dir, "skipped-%s.json" % stamp_name), "w", encoding="utf-8") as fh:
-        json.dump({"cooldown_days": args.cooldown_days, "cooldown_reason": args.cooldown_reason,
+        json.dump({"prior_reply_gate": prior_source or "OPTED OUT: %s" % optout,
+                   "cooldown_days": args.cooldown_days, "cooldown_reason": args.cooldown_reason,
                    "skipped": [{"row": n, "email": e, "reason": r} for n, e, r in skipped]}, fh, ensure_ascii=False, indent=1)
+    if optout:
+        with open(os.path.join(args.state_dir, "prior-reply-optout.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"at": now_utc().isoformat(), "campaign": str(args.campaign), "client": args.client,
+                                 "reason": optout, "source_present": prior_source is not None}, ensure_ascii=False) + "\n")
     succeeded, failed, logged = 0, [], 0
     log_failures, not_accepted = [], {}
     consecutive_failures = 0
