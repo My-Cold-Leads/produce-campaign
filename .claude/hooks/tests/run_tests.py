@@ -323,6 +323,64 @@ run("RED: awk printing into a pipe is not read-only", PUSH, "block",
 run("RED: find -delete is not read-only", PUSH, "block",
     payload(cmd="find . -name 'POST https://api.x.com/campaigns/123/leads' -delete"))
 
+print("more hidden-action forms (push, start and paid call):")
+PUSH_CALL = "curl -X POST https://api.x.com/campaigns/123/leads -d @l.json"
+START_CALL = "curl -X POST https://api.x.com/campaigns/9/status -d '{\"status\":\"START\"}'"
+PAID_CALL = "curl -s https://api.vendor-a.example/v1/people -d @batch.json"
+PAID = "pretooluse-paid-call-approved.sh"
+NEG_ENV = {"CAMPAIGN_PAID_PROVIDERS": r"enrichment=api\.vendor-a\.example,verify=api\.vendor-b\.example"}
+FORMS = (
+    ("a pipe into sh", "echo '%s' | sh"),
+    ("a pipe into node", "echo '%s' | node"),
+    ("a pipe through tee into bash", "echo '%s' | tee /dev/null | bash"),
+    ("an echo into a script then bash", "echo '%s' > run.sh && bash run.sh"),
+    ("tee into a process substitution shell", "echo '%s' | tee >(sh)"),
+    ("rg --pre", "rg --pre '%s' x ."),
+    ("sed e", "echo x | sed 'e %s'"),
+    ("sed -f", "echo '%s' > s.sed && sed -f s.sed in.txt"),
+    ("a git alias", "git -c alias.x='!%s' x"),
+    ("find -exec", "find . -name a -exec %s \\;"),
+    ("a command substitution", "echo $(%s)"),
+    ("backticks", "echo `%s`"),
+    ("a process substitution", "cat <(%s)"),
+    ("awk system(", "awk 'BEGIN{system(\"%s\")}'"),
+    ("an env prefix", "K=1 env A=2 %s"),
+    ("bash -c", "bash -c '%s'"),
+    ("xargs", "echo a | xargs -I{} %s"),
+    ("a backslash continuation", "%s"),
+    ("an echoed --dry-run before it", "echo --dry-run; %s"))
+for label, tmpl in FORMS:
+    for hook, call, env in ((PUSH, PUSH_CALL, None), (HARD, START_CALL, None), (PAID, PAID_CALL, NEG_ENV)):
+        cmd = tmpl % call
+        if label == "a backslash continuation":
+            cmd = call.replace(" -d", " \\\n  -d", 1)
+        run("RED: %s hides a %s" % (label, {PUSH: "push", HARD: "start", PAID: "paid call"}[hook]), hook, "block", payload(cmd=cmd), env=env)
+run("RED: sed -n with the e command runs it", PUSH, "block", payload(cmd="echo x | sed -n 'e " + PUSH_CALL + "'"))
+run("RED: sed -n with an s///e flag runs it", PUSH, "block", payload(cmd="echo '" + PUSH_CALL + "' | sed -n 's/^/ /ep'"))
+run("RED: sed -n -f reads a script that can run commands", PUSH, "block", payload(cmd="sed -n -f s.sed in.txt && " + PUSH_CALL))
+run("RED: awk system(0) runs the line it is fed", PUSH, "block", payload(cmd="echo '" + PUSH_CALL + "' | awk '{system($0)}'"))
+run("rg without --pre naming the endpoint is allowed", PUSH, "allow", payload(cmd="rg -n 'POST https://api.x.com/campaigns/123/leads' scripts/"))
+PY_PUSH = "python3 - <<'EOF'\nimport os\nos.system(\"%s\")\nEOF"
+run("RED: a python heredoc with os.system runs a push", PUSH, "block", payload(cmd=PY_PUSH % PUSH_CALL))
+run("RED: a python heredoc with os.system runs a start", HARD, "block", payload(cmd=PY_PUSH % START_CALL))
+run("RED: a python heredoc with os.system runs a paid call", PAID, "block", payload(cmd=PY_PUSH % PAID_CALL), env=NEG_ENV)
+run("RED: a python heredoc with requests.post pushes leads", PUSH, "block",
+    payload(cmd="python3 - <<'EOF'\nimport requests\nrequests.post('https://api.x.com/campaigns/123/leads', json=b)\nEOF"))
+run("RED: a python heredoc with requests.post starts a campaign", HARD, "block",
+    payload(cmd="python3 - <<'EOF'\nimport requests\nrequests.post('https://api.x.com/campaigns/9/status', json={'status': 'START'})\nEOF"))
+run("RED: a python heredoc with requests.post calls the paid vendor", PAID, "block",
+    payload(cmd="python3 - <<'EOF'\nimport requests\nrequests.post('https://api.vendor-a.example/v1/people', json=b)\nEOF"), env=NEG_ENV)
+run("python3 -c print of the endpoint is allowed", PUSH, "allow", payload(cmd="python3 -c \"print('POST https://api.x.com/campaigns/123/leads')\""))
+run("python3 -c print of a start is allowed", HARD, "allow", payload(cmd="python3 -c \"print('/campaigns/9/status START')\""))
+run("python3 -c print of the vendor host is allowed", PAID, "allow", payload(cmd="python3 -c \"print('api.vendor-a.example')\""), env=NEG_ENV)
+run("a cat heredoc note to a .md is allowed (vendor)", PAID, "allow",
+    payload(cmd="cat > notes.md <<'EOF'\nDo not call https://api.vendor-a.example/v1/people\nEOF"), env=NEG_ENV)
+run("a cat heredoc note to a .md is allowed (start)", HARD, "allow",
+    payload(cmd="cat > notes.md <<'EOF'\n/campaigns/9/status {\"status\":\"START\"}\nEOF"))
+for label, cmd in (("cat", "cat notes.txt # %s"), ("grep", "grep -n '%s' notes.txt"), ("sed -n", "sed -n '/%s/p' notes.txt"),
+                   ("git show", "git show HEAD -- '%s'"), ("bash -n", "bash -n x.sh '%s'")):
+    run("%s naming the vendor host is allowed" % label, PAID, "allow", payload(cmd=cmd % "api.vendor-a.example/v1/people"), env=NEG_ENV)
+
 print("go-live needs the sending-capacity proof as well:")
 clear_proofs()
 proof(9)

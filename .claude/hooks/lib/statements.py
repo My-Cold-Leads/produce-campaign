@@ -31,7 +31,7 @@ CONTINUATION_RE = re.compile(r"\\\r?\n")
 HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(['\"]?)(\w+)\1")
 INTERPRETER = r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[0-9.]*|node|deno|bun|perl|ruby|php)"
 INTERPRETER_RE = re.compile(r"^" + INTERPRETER + r"(\s|$)")
-PIPE_TO_INTERPRETER_RE = re.compile(r"\|\s*(?:xargs\s+(?:-\S+\s+)*)?" + INTERPRETER + r"\b")
+PIPE_TO_INTERPRETER_RE = re.compile(r"(?:\||[<>]\()\s*(?:xargs\s+(?:-\S+\s+)*)?" + INTERPRETER + r"\b")
 ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_]\w*=(?:\"[^\"]*\"|'[^']*'|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|\S*)\s+)+")
 CONTROL_RE = re.compile(r"^(?:(?:if|then|else|elif|do|while|until|!|\{|\()\s+)+")
 WRAPPER_RE = re.compile(r"^(env|nohup|command|exec|sudo|nice|time|xargs)\s+")
@@ -45,6 +45,8 @@ READ_ONLY = frozenset("""grep egrep fgrep rg ag cat head tail less more wc ls st
     test [ true false pwd which type basename dirname date echo printf nl column jq""".split())
 GIT_READ_ONLY = frozenset("show log diff status grep blame ls-files rev-parse cat-file shortlog describe".split())
 FIND_RUNS = re.compile(r"(?:^|\s)-(exec|execdir|ok|okdir|delete|fprint\w*|fls)\b")
+PYTHON_PRINT_RE = re.compile(r"""^python[0-9.]*\s+-c\s+(?:"print\(\s*'[^']*'\s*\)"|'print\(\s*"[^"]*"\s*\)')\s*$""")
+SED_RUNS_RE = re.compile(r"(?:^|[;{}\s'\"0-9$/!])[ew]\s+\S|/[a-zA-Z]*[ew][a-zA-Z]*(?=[\s;}'\"]|$)(?<=[a-zA-Z])")
 AWK_RUNS = re.compile(r"system\s*\(|getline|\|\s*\"|\|&|print[^|\n]*\|")
 
 
@@ -153,9 +155,16 @@ def is_read_only(stmt):
         return True
     name = words[0].rsplit("/", 1)[-1]
     flags = [w for w in words[1:] if w.startswith("-")]
+    if name in ("rg", "ag") and any(re.match(r"^--(pre|hostname-bin)\b", f) for f in flags):
+        return False
     if name in READ_ONLY:
         return True
+    if PYTHON_PRINT_RE.match(stmt):
+        return True
     if name == "sed":
+        # sed runs commands with the e command or the s///e flag, writes with w, and reads a script with -f.
+        if SED_RUNS_RE.search(stmt) or any(re.match(r"^(-f|--file|--debug|-s$)", f) for f in flags):
+            return False
         return any(re.match(r"^-[a-zA-Z]*n[a-zA-Z]*$", f) for f in flags) and not any(
             re.match(r"^(-[a-zA-Z]*i|--in-place)", f) for f in flags)
     if name == "git":
@@ -195,8 +204,16 @@ def _walk(cmd, depth=0):
                 kept.append((raw, sep, inside))
             continue
         feeds_interpreter = False
-        if sep == "|" and pos + 1 < len(parts):
-            feeds_interpreter = bool(INTERPRETER_RE.match(unwrap(parts[pos + 1][0])))
+        j = pos
+        while parts[j][1] == "|" and j + 1 < len(parts):
+            # Any later stage of the pipeline (past tee, cat and friends) that is a shell or an
+            # interpreter, or a tee into a process substitution shell, makes this stage live.
+            j += 1
+            later = unwrap(parts[j][0])
+            runs_input = later.split()[:1] in (["sed"], ["awk"], ["gawk"], ["mawk"]) and not is_read_only(later)
+            if INTERPRETER_RE.match(later) or PIPE_TO_INTERPRETER_RE.search(later) or runs_input:
+                feeds_interpreter = True
+                break
         if is_read_only(stmt) and not feeds_interpreter:
             continue
         kept.append((raw, sep, [stmt]))
