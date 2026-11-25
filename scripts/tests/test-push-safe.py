@@ -439,7 +439,7 @@ json.dump([{"email": "a@example.com", "email_status": V, "first_name": "A", "obs
 open(J("tpl2.html"), "w").write("<div>Hola {{first_name}},</div><div>{{observation}}</div>")
 urllib.request.urlopen = no_network
 rc, text = run("--campaign", "1", "--client", "ACME", "--leads", J("leads2.json"), "--outreach-log", J("log.json"),
-               "--suppression", J("suppression.txt"), "--template", J("tpl2.html"))
+               "--suppression", J("suppression.txt"), "--template", J("tpl2.html"), "--prior-replies", J("prior.txt"))
 check("RED: a lead missing a field the template uses is skipped", "missing_merge_field: 1" in text and "ready to push: 1" in text)
 try:
     facts = ps.Facts()
