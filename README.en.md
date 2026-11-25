@@ -41,7 +41,7 @@ Contact tooling splits into two jobs that people conflate, and getting them the 
 
 Fall back to [Icypeas](https://icypeas.com) or [Findymail](https://findymail.com) as extra waterfall providers when your first choice misses.
 
-**For discovery, run five sources at once over the whole list:** Prospeo, Apollo, AI search on Google (role-targeted queries that Claude reads and verifies), the company's own website, and local or niche databases (sector directories, trade fair and event exhibitor lists). Filter only by the country the person works in, never by job title, and let AI classify the titles afterwards. The full method is in phase 0.3 of `.claude/commands/produce-campaign.md`.
+**For discovery, run five sources at once over the whole list:** Prospeo, Apollo, AI search on Google (role-targeted queries that Claude reads and verifies), the company's own website, and local or niche databases (sector directories, trade fair and event exhibitor lists). Filter only by the country the person works in, never by job title, and let AI classify the titles afterwards. The full method is in phase 0.3 of `.claude/produce-campaign/phases/00-tam-creation.md`.
 
 Running a paid search-first tool in the discovery slot cost us roughly 4x what it should have, because most of the spend went on people already in our database. Free search, then dedupe, then pay.
 
@@ -70,21 +70,23 @@ The pipeline includes a spam check phase before every push. Instead of building 
 5. Turn the hooks on: merge the entries from `.claude/settings.example.json` into your `.claude/settings.json`. Add the entries inside the arrays rather than replacing the file. Hooks do nothing until this step is done.
 6. Run the SQL in `setup/schema.sql` in your database. It is safe to re-run and it upgrades an older install. If the unique index on `contacts` fails, you already have duplicate contacts: the comment above that statement shows how to find them.
 7. Set `SMARTLEAD_API_KEY` (and `DATABASE_URL` if you use Postgres) in your shell environment. Never write keys into a file in the repo.
-8. Check the install. All four should end with `failed 0` or `failed=0`:
+8. Check the install. Run all six; every one must exit with code 0 and report no failures:
    ```bash
    bash .claude/hooks/tests/run-tests.sh
    python3 scripts/tests/test-push-safe.py
+   python3 scripts/tests/test-run-approvals.py
+   python3 scripts/tests/test-capacity-check.py
    python3 scripts/tests/test-verify-hardening.py
    bash scripts/tests/test-check-copy-variation.sh
    ```
 9. Copy `setup/campaign-config.template.md` once per client and fill it in, including section 14 (sending settings) and section 15 (offer scorecard).
 10. Open Claude Code and type `/produce-campaign YourCompanyName`.
 
-Claude then walks you through each phase and stops for your approval at the gates.
+Claude then walks you through each phase. It stops for you only at the five human touchpoints (see "Human touchpoints" below), not after every phase.
 
 ## How it works
 
-The pipeline has 14 phases. Each phase ends with a check, and Claude stops for your approval before moving on. A few of those checks are enforced by code; most are instructions Claude follows. See "What is enforced by code, and what is not" below.
+The pipeline has 14 phases. Each phase ends with a check, and Claude reports one line and moves on to the next phase. It stops for you only at the touchpoints listed in "Human touchpoints" below; anything else that comes up goes into one exceptions digest. A few of those checks are enforced by code; most are instructions Claude follows. See "What is enforced by code, and what is not" below.
 
 1. **Session Setup** - Load your client config, check TAM health, verify data freshness
 2. **Contact Selection** - Pick contacts by persona, apply quality filters, score the list, deduplicate
@@ -101,7 +103,7 @@ The pipeline has 14 phases. Each phase ends with a check, and Claude stops for y
 13. **Targeting Feedback Loop** - Analyze positive replies to sharpen future targeting
 14. **Run Retro** - Capture what went wrong this run and fix the pipeline, not just the campaign
 
-Every phase reports its results and asks before proceeding. The pipeline is designed to catch problems early - before they reach your leads' inboxes.
+Every phase reports its results in one line and moves on; you are asked only at the touchpoints. The pipeline is designed to catch problems early - before they reach your leads' inboxes.
 
 The gates that will feel like overkill until the first time they save you: the real-email review before push (Phase 7), the abstention contract that lets the AI say "I don't know" instead of inventing (Phase 6), and confirming the website you researched actually belongs to the company you are emailing (Phase 4).
 
@@ -211,7 +213,9 @@ Be clear about what you are installing. This repo is a detailed runbook, plus a 
 | Campaign start or lead load without a fresh hardening proof for that campaign | `scripts/verify-hardening.py` + hardening hook |
 | Campaign-level gap set, follow-up percentage not the agreed value | `scripts/verify-hardening.py` |
 | A body line in more than 15% of emails, a fixed line, under 90% distinct | `scripts/check-copy-variation.py` |
-| `NOT_FOUND` token in a lead payload; spintax or `%signature%` inside a custom field | hooks |
+| `NOT_FOUND`, unresolved placeholders (`{{...}}`, `[FIRST_NAME]`, TODO/TBD/lorem), spintax or `%signature%` in a lead value | `scripts/push-safe.py` (refuses the whole push, names the lead and field) |
+| `NOT_FOUND` token, spintax or `%signature%` in a command or payload being written | hooks |
+| No prior-reply data source (no `--prior-replies FILE`, empty `campaign_responses`) | `scripts/push-safe.py` (fails closed; opt out only with `--no-prior-reply-source "REASON"`, which is printed and logged) |
 | Uncached model loop; paid results buffered and written at the end | hooks (heuristics) |
 | Paid provider call with no recorded, unexpired approval for that run and that provider, or over its cap | `scripts/run-approvals.py` + paid-call hook |
 | Approval from another run, expired, declined, or with changed terms | `scripts/run-approvals.py` |
@@ -230,13 +234,28 @@ TAM pacing and the cohort ledger, the offer / value-equation gate, the in-flight
 
 Also instruction only, for the approval bundle: that the reply saved by `scripts/run-approvals.py` was typed by a person; that Claude stops only at the five touchpoints and puts everything else in the digest; that `bypass-check` is run before a bypass marker is used (the marker itself is still only an audit trail); that the offer check and the skip check are called at the right step; and the numbers you give `scripts/capacity-check.py`, which proves the sum and not the inputs.
 
-### Described but not shipped (you build these, or let Claude write them per run)
+### Not included in this repo (you supply your own)
 
-The email finding and verification waterfall, the company research agent, the ICP classifier, the email renderer (template + fields + spintax + signature), the field validator, the copy grader, the spam checker client, the review page builder, the sequence lock comparer, the sync job that fills `first_sent_date` and `campaign_responses` from your platform, prompt library tooling, and the manifest writer. Only three starter prompts ship in `prompts/`.
+These twelve components are described by the skill but are **not included in this repo**. Nothing here builds them; you write them, or let Claude write them per run. Each row says what it would need to do.
 
-Two of those matter for the code that does ship: without a sync job, `first_sent_date` stays empty (the cooldown then runs on `loaded_date`, which is safe but conservative) and `campaign_responses` stays empty (the prior-reply gate and the in-flight check then pass everyone; the wrapper's live membership check still catches leads queued elsewhere).
+| Component | Status and what it would need to do |
+|---|---|
+| Email finding and verification waterfall | Not included in this repo (you supply your own). Needs to: find an address per contact through your providers in order, verify it, and write `email_status` to `contacts`. |
+| Company research agent | Not included in this repo (you supply your own). Needs to: fetch the company's own pages and search results and return facts, each with the source quote that supports it. |
+| ICP classifier | Not included in this repo (you supply your own). Needs to: label each company and title as in or out of the ideal customer profile, with a reason. |
+| Email renderer | Not included in this repo (you supply your own). Needs to: merge template, custom fields, spintax and signature into the final emails that `scripts/check-copy-variation.py --rendered` reads. |
+| Field validator | Not included in this repo (you supply your own). Needs to: reject empty, placeholder, invented or malformed field values before generation and before the push (the wrapper only scans for placeholders, `NOT_FOUND`, spintax and `%variable%` syntax). |
+| Copy grader | Not included in this repo (you supply your own). Needs to: score generated copy against your quality rules and return pass or fail per email. |
+| Spam checker client | Not included in this repo (you supply your own). Needs to: send the copy to a spam-word service (ours is free at the link above) and return the flagged words. |
+| Review page builder | Not included in this repo (you supply your own). Needs to: render the real emails into one page a person reads before approving the push. |
+| Sequence lock comparer | Not included in this repo (you supply your own). Needs to: diff the live sequences against the approved structure and fail on drift. |
+| Sync job | Not included in this repo (you supply your own). Needs to: copy `first_sent_date` and replies from your sending platform into `outreach_log` and `campaign_responses`. |
+| Prompt library tooling | Not included in this repo (you supply your own). Needs to: store, version and select prompts per task and model. Only three starter prompts ship in `prompts/`. |
+| Manifest writer | Not included in this repo (you supply your own). Needs to: write one record per run of what was pushed, with counts and file hashes. |
 
-**Realistic effort:** a team already on Claude Code, Smartlead and Postgres can adopt this in one to two weeks. Another agent framework or sending platform means rebuilding the wrapper and the hooks, using the skill as the spec.
+Two of those matter for the code that does ship. Without a sync job, `first_sent_date` stays empty (the cooldown then runs on `loaded_date`, which is safe but conservative) and `campaign_responses` stays empty. The prior-reply gate does not pass everyone in that case: it **fails closed** and the wrapper refuses to run until you give it `--prior-replies FILE` (file mode), fill `campaign_responses` (database mode), or pass `--no-prior-reply-source "REASON"`. That opt-out prints a warning on every run and, on `--apply`, appends the reason to `prior-reply-optout.jsonl` in the state directory. The in-flight check is instruction only; the wrapper's live membership check still catches leads queued elsewhere.
+
+**Realistic effort:** a team already on Claude Code, Smartlead and Postgres can adopt this in one to two weeks, most of it building the components above. Another agent framework or sending platform means rebuilding the wrapper and the hooks, using the skill as the spec.
 
 ### What the hooks can and cannot see
 
@@ -273,17 +292,17 @@ A marker is an audit trail, not a control: the agent being guarded can type one.
 ### Prove they work before you trust them
 
 ```bash
-bash .claude/hooks/tests/run-tests.sh            # 151 hook fixtures
-python3 scripts/tests/test-push-safe.py          # 65 wrapper checks against a fake platform, no network
-python3 scripts/tests/test-run-approvals.py      # 78 approval checks
-python3 scripts/tests/test-capacity-check.py     # 15 checks
-python3 scripts/tests/test-verify-hardening.py   # 10 checks
-bash scripts/tests/test-check-copy-variation.sh  # 24 fixtures
+bash .claude/hooks/tests/run-tests.sh
+python3 scripts/tests/test-push-safe.py
+python3 scripts/tests/test-run-approvals.py
+python3 scripts/tests/test-capacity-check.py
+python3 scripts/tests/test-verify-hardening.py
+bash scripts/tests/test-check-copy-variation.sh
 ```
 
-Each gate is fed a known-bad input it must refuse and a known-good input it must allow. A gate that has never gone red might be working, or might be silently doing nothing. There is no CI in this repo; run them yourself after every change.
+Run each one; all six must pass (exit code 0, no failures reported). The counts are not written here because they go stale; the suites print their own totals. Each gate is fed a known-bad input it must refuse and a known-good input it must allow. A gate that has never gone red might be working, or might be silently doing nothing.
 
-They are plain bash and Python with no dependencies. Read them; they are short.
+`.github/workflows/tests.yml` runs all six suites on every push and pull request (ubuntu-latest, Python 3, no secrets). A second job, `mutation-red`, swaps the push wrapper back to the `origin/main` version and passes only if the new tests then fail, which proves they can go red.
 
 ### The push wrapper
 
@@ -345,6 +364,11 @@ Our copywriting methodology has been shaped by several practitioners whose work 
 Follow me on LinkedIn for more tools and posts about our stack.
 
 ## Changelog
+
+**November 2026, third update** - Fixes from a second outside review.
+- *Push wrapper:* scans every lead value and refuses the whole push on `NOT_FOUND`, unresolved placeholders, spintax or `%variable%` syntax. The prior-reply gate now fails closed with no data source; the only way past is a logged `--no-prior-reply-source` opt-out.
+- *Skill:* one stop rule, stated in the README, the skill index and the phase files: ask only at the five touchpoints.
+- *Repo:* CI workflow for every suite, test counts replaced by "run it; all must pass", and the twelve unshipped components listed honestly as not included.
 
 **November 2026, second update** - One set of approvals per campaign, and a second round of gate fixes from review.
 - *Run approval bundle:* `scripts/run-approvals.py` asks for every approval once, saves it per run, and the gates read it. 4 to 6 human touchpoints instead of one per step. Approvals are scoped to one run, expire, are bound to their provider, and a declined item never counts. One reply covers the final copy sign-off and the DRAFT push; it never covers go-live.

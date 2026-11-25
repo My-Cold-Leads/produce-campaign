@@ -16,7 +16,7 @@ Ask for every approval the run needs ONCE, up front. Save the answer. Every late
 
 A sixth touch exists only when answering the digest raises something new.
 
-A yes in any wording counts. Never ask the user to type a set phrase. Never ask "shall I continue?" between steps that need no decision.
+A yes in any wording counts. Never ask the user to type a set phrase. Never ask "shall I continue?" between steps that need no decision. This is the only stop rule; a phase file that seems to say "stop and wait" means the touchpoint it names, nothing more. Inside a run, the push wrapper's approval is `--signoff-run`; `--approval FILE` is for a push made outside a run.
 
 ## Touchpoint 1: what the bundle carries
 

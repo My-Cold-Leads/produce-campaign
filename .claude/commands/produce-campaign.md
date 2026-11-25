@@ -33,7 +33,7 @@ If you remember nothing else from this document, remember these. Every gate belo
 
 **Ask once, up front.** Before any data work, build the run approval bundle (`.claude/produce-campaign/phases/00b-run-approval-bundle.md`) and get it answered. After that, run to the next touchpoint without asking "Proceed?" between phases. After each phase, state one line: "Phase [N] complete. [Result]. Moving to Phase [N+1]."
 
-Stop for the user only at these touchpoints: (1) the up-front bundle, (2) the offer and 10 examples, only if new or changed, (3) final copy sign-off plus the DRAFT push of the named campaigns, in one reply, (4) go-live, (5) one exceptions digest, only if something tripped. A yes in any wording counts. The bundle never covers the copy sign-off, the push or go-live: those are touchpoints 3 and 4. Anything else that comes up goes into the exceptions digest while you carry on with the work it does not affect.
+Stop for the user only at these touchpoints: (1) the up-front bundle, (2) the offer and 10 examples, only if new or changed, (3) final copy sign-off plus the DRAFT push of the named campaigns, in one reply, (4) go-live, (5) one exceptions digest, only if something tripped. A yes in any wording counts. The bundle never covers the copy sign-off, the push or go-live: those are touchpoints 3 and 4. Anything else that comes up goes into the exceptions digest while you carry on with the work it does not affect. This is the only stop rule: no phase file may add another stop, and none may ask for a typed phrase.
 
 ### What is enforced by code, and what is an instruction
 

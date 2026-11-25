@@ -1,0 +1,55 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Hook fixtures
+        run: bash .claude/hooks/tests/run-tests.sh
+      - name: Push wrapper
+        run: python3 scripts/tests/test-push-safe.py
+      - name: Run approvals
+        run: python3 scripts/tests/test-run-approvals.py
+      - name: Capacity check
+        run: python3 scripts/tests/test-capacity-check.py
+      - name: Hardening verifier
+        run: python3 scripts/tests/test-verify-hardening.py
+      - name: Copy variation checker
+        run: bash scripts/tests/test-check-copy-variation.sh
+
+  # RED proof: the new tests must FAIL against the previous push wrapper. If they pass
+  # against old code they prove nothing.
+  mutation-red:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Restore the push wrapper from origin/main
+        run: |
+          git fetch origin main
+          # Beside the other scripts, because the wrapper loads its siblings by path.
+          git show origin/main:scripts/push-safe.py > scripts/push-safe-old.py
+          git diff --quiet origin/main -- scripts/push-safe.py && echo "NOTE: wrapper equals origin/main (merged branch); RED check is skipped" && echo SAME=1 >> "$GITHUB_ENV" || true
+      - name: The push-safe suite must FAIL against the old wrapper
+        run: |
+          if [ "${SAME:-0}" = "1" ]; then exit 0; fi
+          if PUSH_SAFE="$PWD/scripts/push-safe-old.py" python3 scripts/tests/test-push-safe.py > "$RUNNER_TEMP/red.log" 2>&1; then
+            echo "FAIL: the suite passed against the old wrapper, so it proves nothing"; tail -20 "$RUNNER_TEMP/red.log"; exit 1
+          fi
+          grep "FAIL" "$RUNNER_TEMP/red.log" | head -40
+          echo "OK: RED against the old wrapper"

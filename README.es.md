@@ -41,7 +41,7 @@ Las herramientas de contactos hacen dos trabajos que la gente confunde, y hacerl
 
 Usa [Icypeas](https://icypeas.com) o [Findymail](https://findymail.com) como proveedores adicionales de la cascada cuando tu primera opción falle.
 
-**Para el descubrimiento, combina cinco fuentes a la vez sobre toda la lista:** Prospeo, Apollo, búsqueda con IA en Google (consultas por cargo que Claude lee y verifica), la web de la propia empresa, y bases de datos locales o de nicho (directorios del sector, listados de ferias y eventos). Filtra solo por el país donde trabaja la persona, nunca por cargo, y deja que la IA clasifique los cargos después. El método completo está en la fase 0.3 de `.claude/commands/produce-campaign.md`.
+**Para el descubrimiento, combina cinco fuentes a la vez sobre toda la lista:** Prospeo, Apollo, búsqueda con IA en Google (consultas por cargo que Claude lee y verifica), la web de la propia empresa, y bases de datos locales o de nicho (directorios del sector, listados de ferias y eventos). Filtra solo por el país donde trabaja la persona, nunca por cargo, y deja que la IA clasifique los cargos después. El método completo está en la fase 0.3 de `.claude/produce-campaign/phases/00-tam-creation.md`.
 
 Poner una herramienta de búsqueda de pago en el hueco del descubrimiento nos costó unas 4 veces lo que debería, porque la mayor parte del gasto se fue en gente que ya estaba en nuestra propia base de datos. Búsqueda gratis, deduplicar, y después pagar.
 
@@ -70,21 +70,23 @@ El pipeline incluye una fase de comprobación de spam antes de cada push. En lug
 5. Activa los hooks: añade las entradas de `.claude/settings.example.json` a tu `.claude/settings.json`, dentro de los arrays y sin sustituir el fichero. Los hooks no hacen nada hasta que completes este paso.
 6. Ejecuta el SQL de `setup/schema.sql` en tu base de datos. Se puede volver a ejecutar sin riesgo y actualiza una instalación anterior. Si falla el índice único de `contacts`, ya tienes contactos duplicados: el comentario encima de esa sentencia explica cómo encontrarlos.
 7. Define `SMARTLEAD_API_KEY` (y `DATABASE_URL` si usas Postgres) en el entorno de tu terminal. Nunca escribas claves en un fichero del repo.
-8. Comprueba la instalación. Los cuatro deben terminar con `failed 0` o `failed=0`:
+8. Comprueba la instalación. Ejecuta los seis; cada uno debe terminar con código de salida 0 y sin fallos:
    ```bash
    bash .claude/hooks/tests/run-tests.sh
    python3 scripts/tests/test-push-safe.py
+   python3 scripts/tests/test-run-approvals.py
+   python3 scripts/tests/test-capacity-check.py
    python3 scripts/tests/test-verify-hardening.py
    bash scripts/tests/test-check-copy-variation.sh
    ```
 9. Copia `setup/campaign-config.template.md` una vez por cliente y rellénalo, incluidas la sección 14 (ajustes de envío) y la sección 15 (ficha de la oferta).
 10. Abre Claude Code y escribe `/produce-campaign TuNombreDeEmpresa`.
 
-A partir de ahí Claude te guía fase a fase y se detiene a pedir tu aprobación en cada puerta.
+A partir de ahí Claude te guía fase a fase. Se detiene a pedirte algo solo en los cinco puntos de contacto humanos (mira "Puntos de contacto humanos" más abajo), no después de cada fase.
 
 ## Cómo funciona
 
-El pipeline tiene 14 fases. Cada fase termina con una comprobación, y Claude se detiene a pedir tu aprobación antes de continuar. Algunas de esas comprobaciones se cumplen por código; la mayoría son instrucciones que Claude sigue. Mira "Qué se cumple por código y qué no" más abajo.
+El pipeline tiene 14 fases. Cada fase termina con una comprobación, y Claude da un resumen de una línea y pasa a la siguiente fase. Se detiene a pedirte algo solo en los puntos de contacto de "Puntos de contacto humanos" más abajo; todo lo demás va a un único resumen de excepciones. Algunas de esas comprobaciones se cumplen por código; la mayoría son instrucciones que Claude sigue. Mira "Qué se cumple por código y qué no" más abajo.
 
 1. **Configuración de sesión** - Cargar la configuración del cliente, comprobar la salud del TAM, verificar la frescura de los datos
 2. **Selección de contactos** - Elegir contactos por persona, aplicar filtros de calidad, puntuar la lista, deduplicar
@@ -101,7 +103,7 @@ El pipeline tiene 14 fases. Cada fase termina con una comprobación, y Claude se
 13. **Bucle de retroalimentación** - Analizar respuestas positivas para afinar el targeting futuro
 14. **Retrospectiva** - Recoger lo que falló en esta ejecución y arreglar el pipeline, no solo la campaña
 
-Cada fase reporta sus resultados y pregunta antes de continuar. El pipeline está diseñado para detectar problemas pronto - antes de que lleguen a las bandejas de entrada de tus leads.
+Cada fase reporta sus resultados en una línea y sigue; solo se te pregunta en los puntos de contacto. El pipeline está diseñado para detectar problemas pronto - antes de que lleguen a las bandejas de entrada de tus leads.
 
 Las barreras que parecerán excesivas hasta la primera vez que te salven: la revisión de emails reales antes del push (Fase 7), el contrato de abstención que deja a la IA decir "no lo sé" en lugar de inventar (Fase 6), y confirmar que la web que investigaste pertenece de verdad a la empresa a la que escribes (Fase 4).
 
@@ -211,7 +213,9 @@ Conviene tener claro qué estás instalando. Este repo es un procedimiento muy d
 | Arrancar una campaña o cargar leads sin una prueba de blindaje reciente de esa campaña | `scripts/verify-hardening.py` + hook de blindaje |
 | Pausa entre emails definida a nivel de campaña, o porcentaje de seguimiento distinto del acordado | `scripts/verify-hardening.py` |
 | Una línea del cuerpo en más del 15% de los emails, una línea fija, menos del 90% de emails distintos | `scripts/check-copy-variation.py` |
-| El token `NOT_FOUND` en los datos de un lead; spintax o `%signature%` dentro de un campo personalizado | hooks |
+| `NOT_FOUND`, marcadores sin resolver (`{{...}}`, `[FIRST_NAME]`, TODO/TBD/lorem), spintax o `%signature%` en el valor de un lead | `scripts/push-safe.py` (rechaza todo el push e indica el lead y el campo) |
+| El token `NOT_FOUND`, spintax o `%signature%` en un comando o contenido que se escribe | hooks |
+| Sin fuente de datos de respuestas previas (ni `--prior-replies FICHERO`, ni `campaign_responses` con filas) | `scripts/push-safe.py` (falla cerrado; solo se evita con `--no-prior-reply-source "MOTIVO"`, que se muestra y se registra) |
 | Bucle de llamadas a un modelo sin caché; resultados de pago guardados solo al final | hooks (heurísticos) |
 | Llamada a un proveedor de pago sin aprobación registrada y vigente para esa ejecución y ese proveedor, o por encima de su tope | `scripts/run-approvals.py` + hook de llamadas de pago |
 | Aprobación de otra ejecución, caducada, rechazada o con condiciones cambiadas | `scripts/run-approvals.py` |
@@ -230,13 +234,28 @@ El ritmo de consumo del TAM y el registro de cohorte, la puerta de la oferta (ec
 
 También son solo instrucciones, en el paquete de aprobaciones: que la respuesta guardada por `scripts/run-approvals.py` la escribió una persona; que Claude se detiene solo en los cinco puntos de contacto y deja todo lo demás en el resumen; que se ejecuta `bypass-check` antes de usar un marcador de excepción (el marcador sigue siendo solo un rastro de auditoría); que la comprobación de la oferta y la de los pasos saltados se llaman en el paso correcto; y los números que le das a `scripts/capacity-check.py`, que demuestra la suma y no los datos de entrada.
 
-### Descrito pero no incluido (lo construyes tú, o Claude lo escribe en cada ejecución)
+### No incluido en este repo (lo aportas tú)
 
-La cascada de búsqueda y verificación de emails, el agente de investigación de empresas, el clasificador de ICP, el renderizador de emails (plantilla + campos + spintax + firma), el validador de campos, el evaluador de copy, el cliente del comprobador de spam, el generador de la página de revisión, el comparador del bloqueo de secuencia, el proceso de sincronización que rellena `first_sent_date` y `campaign_responses` desde tu plataforma, las herramientas de la biblioteca de prompts y el generador del manifiesto. En `prompts/` solo vienen tres prompts de partida.
+El skill describe estos doce componentes, pero **no están incluidos en este repo**. Aquí nada los construye; los escribes tú, o Claude los escribe en cada ejecución. Cada fila dice qué tendría que hacer.
 
-Dos de ellos afectan al código que sí viene: sin sincronización, `first_sent_date` queda vacío (el periodo de espera se calcula entonces con `loaded_date`, que es seguro pero conservador) y `campaign_responses` queda vacía (la puerta de respuestas previas y la comprobación de secuencias en curso dejan pasar a todos; la comprobación en vivo del wrapper sigue detectando los leads en cola en otra campaña).
+| Componente | Estado y qué tendría que hacer |
+|---|---|
+| Cascada de búsqueda y verificación de emails | No incluido en este repo (lo aportas tú). Tendría que: encontrar una dirección por contacto con tus proveedores en orden, verificarla y escribir `email_status` en `contacts`. |
+| Agente de investigación de empresas | No incluido en este repo (lo aportas tú). Tendría que: leer las páginas de la empresa y los resultados de búsqueda y devolver datos, cada uno con la cita de la fuente que lo respalda. |
+| Clasificador de ICP | No incluido en este repo (lo aportas tú). Tendría que: etiquetar cada empresa y cargo como dentro o fuera del cliente ideal, con un motivo. |
+| Renderizador de emails | No incluido en este repo (lo aportas tú). Tendría que: combinar plantilla, campos personalizados, spintax y firma en los emails finales que lee `scripts/check-copy-variation.py --rendered`. |
+| Validador de campos | No incluido en este repo (lo aportas tú). Tendría que: rechazar valores vacíos, de relleno, inventados o mal formados antes de generar y antes del push (el wrapper solo busca marcadores de posición, `NOT_FOUND`, spintax y sintaxis `%variable%`). |
+| Evaluador de copy | No incluido en este repo (lo aportas tú). Tendría que: puntuar el copy generado según tus reglas de calidad y devolver aprobado o suspenso por email. |
+| Cliente del comprobador de spam | No incluido en este repo (lo aportas tú). Tendría que: enviar el copy a un servicio de palabras spam (el nuestro es gratuito, en el enlace de arriba) y devolver las palabras marcadas. |
+| Generador de la página de revisión | No incluido en este repo (lo aportas tú). Tendría que: pintar los emails reales en una sola página que una persona lee antes de aprobar el push. |
+| Comparador del bloqueo de secuencia | No incluido en este repo (lo aportas tú). Tendría que: comparar las secuencias en vivo con la estructura aprobada y fallar si se desvían. |
+| Proceso de sincronización | No incluido en este repo (lo aportas tú). Tendría que: copiar `first_sent_date` y las respuestas de tu plataforma de envío a `outreach_log` y `campaign_responses`. |
+| Herramientas de la biblioteca de prompts | No incluido en este repo (lo aportas tú). Tendría que: guardar, versionar y elegir prompts por tarea y modelo. En `prompts/` solo vienen tres prompts de partida. |
+| Generador del manifiesto | No incluido en este repo (lo aportas tú). Tendría que: escribir un registro por ejecución de lo que se subió, con recuentos y hashes de ficheros. |
 
-**Esfuerzo realista:** un equipo que ya trabaja con Claude Code, Smartlead y Postgres puede adoptarlo en una o dos semanas. Con otro framework de agentes u otra plataforma de envío hay que rehacer el wrapper y los hooks, usando el skill como especificación.
+Dos de ellos afectan al código que sí viene. Sin sincronización, `first_sent_date` queda vacío (el periodo de espera se calcula entonces con `loaded_date`, que es seguro pero conservador) y `campaign_responses` queda vacía. En ese caso la puerta de respuestas previas no deja pasar a todos: **falla cerrado** y el wrapper se niega a ejecutarse hasta que le des `--prior-replies FICHERO` (modo fichero), rellenes `campaign_responses` (modo base de datos) o pases `--no-prior-reply-source "MOTIVO"`. Esa excepción muestra un aviso en cada ejecución y, con `--apply`, añade el motivo a `prior-reply-optout.jsonl` en el directorio de estado. La comprobación de secuencias en curso es solo una instrucción; la comprobación en vivo del wrapper sigue detectando los leads en cola en otra campaña.
+
+**Esfuerzo realista:** un equipo que ya trabaja con Claude Code, Smartlead y Postgres puede adoptarlo en una o dos semanas, casi todo para construir los componentes de arriba. Con otro framework de agentes u otra plataforma de envío hay que rehacer el wrapper y los hooks, usando el skill como especificación.
 
 ### Qué ven los hooks y qué no
 
@@ -273,17 +292,17 @@ Un marcador es un rastro de auditoría, no un control: el propio agente vigilado
 ### Compruébalo antes de fiarte
 
 ```bash
-bash .claude/hooks/tests/run-tests.sh            # 151 casos de hooks
-python3 scripts/tests/test-push-safe.py          # 65 comprobaciones del wrapper contra una plataforma simulada, sin red
-python3 scripts/tests/test-run-approvals.py      # 78 comprobaciones de aprobaciones
-python3 scripts/tests/test-capacity-check.py     # 15 comprobaciones
-python3 scripts/tests/test-verify-hardening.py   # 10 comprobaciones
-bash scripts/tests/test-check-copy-variation.sh  # 24 casos
+bash .claude/hooks/tests/run-tests.sh
+python3 scripts/tests/test-push-safe.py
+python3 scripts/tests/test-run-approvals.py
+python3 scripts/tests/test-capacity-check.py
+python3 scripts/tests/test-verify-hardening.py
+bash scripts/tests/test-check-copy-variation.sh
 ```
 
-A cada puerta se le da una entrada mala que debe rechazar y una buena que debe dejar pasar. Una puerta que nunca se ha puesto en rojo puede estar funcionando, o puede no estar haciendo nada. Este repo no tiene integración continua; ejecútalos tú después de cada cambio.
+Ejecuta cada uno; los seis deben pasar (código de salida 0, sin fallos). Aquí no se escriben los recuentos porque se quedan obsoletos; cada suite imprime sus totales. A cada puerta se le da una entrada mala que debe rechazar y una buena que debe dejar pasar. Una puerta que nunca se ha puesto en rojo puede estar funcionando, o puede no estar haciendo nada.
 
-Son bash y Python, sin dependencias. Léelos, son cortos.
+`.github/workflows/tests.yml` ejecuta las seis suites en cada push y pull request (ubuntu-latest, Python 3, sin secretos). Un segundo trabajo, `mutation-red`, devuelve el wrapper de push a la versión de `origin/main` y solo pasa si las pruebas nuevas fallan entonces, lo que demuestra que pueden ponerse en rojo.
 
 ### El wrapper de push
 
@@ -345,6 +364,11 @@ Nuestra metodología de copywriting ha sido moldeada por varios profesionales cu
 Sígueme en LinkedIn para más herramientas y publicaciones sobre nuestro stack.
 
 ## Registro de cambios
+
+**Noviembre 2026, tercera actualización** - Correcciones de una segunda revisión externa.
+- *Wrapper de push:* revisa cada valor de cada lead y rechaza todo el push si hay `NOT_FOUND`, marcadores sin resolver, spintax o sintaxis `%variable%`. La puerta de respuestas previas ahora falla cerrado sin fuente de datos; la única salida es la excepción `--no-prior-reply-source`, que queda registrada.
+- *Skill:* una sola regla de parada, escrita en el README, en el índice del skill y en los ficheros de fase: preguntar solo en los cinco puntos de contacto.
+- *Repo:* flujo de integración continua para todas las suites, recuentos de pruebas sustituidos por "ejecútalo; todo debe pasar" y los doce componentes no incluidos listados con honestidad.
 
 **Noviembre 2026, segunda actualización** - Un solo conjunto de aprobaciones por campaña y una segunda ronda de correcciones tras la revisión.
 - *Paquete de aprobaciones:* `scripts/run-approvals.py` pide todas las aprobaciones una vez, las guarda por ejecución y las comprobaciones las leen. De 4 a 6 puntos de contacto humanos en lugar de uno por paso. Las aprobaciones valen para una sola ejecución, caducan, están ligadas a su proveedor, y un punto rechazado nunca cuenta. Una sola respuesta cubre el visto bueno final del copy y la carga en BORRADOR; nunca cubre la puesta en marcha.

@@ -180,8 +180,8 @@ A field that cannot be cleaned to a plain category is set to empty, and the cont
 2. Generate all variables for those companies using the prompt
 3. Output in Standard Format (see below)
 4. Review against the quality rules in 6.4 below - apply them yourself before showing the user
-5. Show output. Wait for feedback.
-6. Apply changes, regenerate same 10-20, show diff
+5. Show the output to the user only when the offer or the prompt is new or changed (touchpoint 2: the offer and 10 real examples). Otherwise do not stop: apply the checks yourself and carry on.
+6. Apply changes (the user's feedback at touchpoint 2, or your own check results), regenerate the same 10-20 and compare
 7. Count failures against the 6.4 rules. On 10-20 samples any failure means: fix the prompt and regenerate. Do not proceed.
 8. When a fresh set of 10-20 comes back with zero failures, climb the sample ladder in `/iterative-prompting` (10, 20, 50, 300) using its pass bar at each rung. Save the prompt to your library, THEN run full production
 

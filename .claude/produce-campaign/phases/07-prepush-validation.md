@@ -269,7 +269,7 @@ Run the opener-question fit, plain-language and singular-grammar checks from 6.4
 
 ## PUSH APPROVAL GATE (NON-NEGOTIABLE)
 
-**Before ANY data is sent to your sending platform, Claude MUST stop and show the user this summary, together with the real-email review from 7.7:**
+**Before ANY data is sent to your sending platform, the user must have approved the real-email review from 7.7. This is touchpoint 3 (copy sign-off plus the DRAFT push, one reply for every named campaign). Show this summary with the review:**
 
 ```
 PUSH PREVIEW - {CLIENT} {PERSONA} -> Campaign {ID}
@@ -280,11 +280,11 @@ Subject variants for this persona: {N} (all shown at the top of the review)
 Real emails in the review: {N}, rendered with greeting and signature
 Approval file: approval.json ({N} lead hashes + template hash), unsigned until you approve
 
-Are you happy with this? Type "push" to proceed, or describe what to fix.
+Are you happy with this? Reply in any words to approve, or describe what to fix.
 ```
 
-**Do NOT run the wrapper with `--apply` until the user explicitly approves.** Then sign the approval file with their name, the time and their words. The wrapper refuses `--apply` without a signed approval whose hashes match what is being pushed.
+**Do NOT run the wrapper with `--apply` until the user has approved at touchpoint 3. A yes in any wording counts; never ask for a set phrase.** Then sign the approval file with their name, the time and their words. The wrapper refuses `--apply` without a signed approval whose hashes match what is being pushed.
 
 If the user asks to fix something, apply the fix, rebuild the review and show it again. Do not push until approved.
 
-This gate applies to every campaign in a multi-persona run - show one preview per campaign and wait for approval before pushing each one.
+This gate applies to every campaign in a multi-persona run - show one preview per campaign, all in the same message, and ask once. One reply that names the campaigns approves all of them; do not stop again between campaigns. This is the one stop rule for the whole skill: ask only at the five touchpoints in `00b-run-approval-bundle.md`.
